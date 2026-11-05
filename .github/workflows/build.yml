@@ -32,10 +32,11 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --onefile --name GeoGEDCOM geo-gedcom.py
 
       - name: Publier le programme Windows
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: GeoGEDCOM-Windows
           path: dist/GeoGEDCOM.exe
+          if-no-files-found: error
 
   build-macos:
     name: Compilation macOS
@@ -65,7 +66,8 @@ jobs:
           zip -r GeoGEDCOM-macOS.zip GeoGEDCOM.app
 
       - name: Publier le programme macOS
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: GeoGEDCOM-macOS
           path: dist/GeoGEDCOM-macOS.zip
+          if-no-files-found: error
