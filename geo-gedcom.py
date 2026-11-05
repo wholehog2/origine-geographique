@@ -292,20 +292,24 @@ LIEU_INCONNU = "Lieu inconnu"
 def extraire_lieu(brut, niveau, depuis_la_fin):
     """Extrait le composant de lieu voulu dans 'Ville, CP, Dept, Pays'.
 
+    Les composants vides sont CONSERVÉS pour ne pas décaler les niveaux :
+      "Rio,,Grande Rio,Rio,BRASIL,"  -> 6 composants dont le 2e et le
+      dernier sont vides. Une virgule finale signale un dernier élément
+      manquant.
+    Si le composant demandé est vide, le lieu est "Lieu inconnu".
+
     niveau : 1 = premier composant (en partant de la fin ou du début).
     Si le lieu a moins de composants, on prend le plus proche.
     """
     if not brut or not brut.strip():
         return LIEU_INCONNU
-    parts = [p.strip() for p in brut.split(",") if p.strip()]
-    if not parts:
-        return LIEU_INCONNU
+    parts = [p.strip() for p in brut.split(",")]
     niveau = max(1, niveau)
     if depuis_la_fin:
         i = max(len(parts) - niveau, 0)
     else:
         i = min(niveau - 1, len(parts) - 1)
-    return parts[i]
+    return parts[i] or LIEU_INCONNU
 
 
 # ============================================================
