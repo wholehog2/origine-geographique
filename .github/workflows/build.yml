@@ -1,68 +1,71 @@
-name: Compiler Origines géographiques
+
+name: Compiler Geo-GEDCOM
 
 on:
-  push:
-    branches: [main, master]
   workflow_dispatch:
-
-permissions:
-  contents: read
+  push:
+    branches:
+      - main
+      - master
 
 jobs:
-  build:
-    name: Compilation ${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
+  build-windows:
+    name: Compilation Windows
+    runs-on: windows-latest
 
     steps:
-      - name: Récupérer le dépôt
+      - name: Récupérer le code
         uses: actions/checkout@v4
 
       - name: Installer Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.12'
+          python-version: "3.12"
 
       - name: Installer les dépendances
         run: |
           python -m pip install --upgrade pip
-          python -m pip install numpy plotly pyinstaller
+          pip install pyinstaller numpy plotly
 
-      - name: Compiler sous Windows
-        if: runner.os == 'Windows'
-        shell: pwsh
+      - name: Compiler le programme
         run: |
-          pyinstaller --noconfirm --clean --windowed --onedir `
-            --name OriginesGeographiques `
-            diag-gedcom-moderne3-corrige.py
-          Compress-Archive -Path dist/OriginesGeographiques `
-            -DestinationPath OriginesGeographiques-Windows.zip -Force
-
-      - name: Compiler sous macOS
-        if: runner.os == 'macOS'
-        run: |
-          pyinstaller --noconfirm --clean --windowed --onedir \
-            --name OriginesGeographiques \
-            diag-gedcom-moderne3-corrige.py
-          ditto -c -k --sequesterRsrc --keepParent \
-            dist/OriginesGeographiques.app \
-            OriginesGeographiques-macOS.zip
+          pyinstaller --noconfirm --clean --windowed --onefile --name GeoGEDCOM geo-gedcom.py
 
       - name: Publier le programme Windows
-        if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
-          name: OriginesGeographiques-Windows
-          path: OriginesGeographiques-Windows.zip
-          if-no-files-found: error
+          name: GeoGEDCOM-Windows
+          path: dist/GeoGEDCOM.exe
+
+  build-macos:
+    name: Compilation macOS
+    runs-on: macos-latest
+
+    steps:
+      - name: Récupérer le code
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          pip install pyinstaller numpy plotly
+
+      - name: Compiler le programme
+        run: |
+          pyinstaller --noconfirm --clean --windowed --name GeoGEDCOM geo-gedcom.py
+
+      - name: Créer l'archive macOS
+        run: |
+          cd dist
+          zip -r GeoGEDCOM-macOS.zip GeoGEDCOM.app
 
       - name: Publier le programme macOS
-        if: runner.os == 'macOS'
         uses: actions/upload-artifact@v4
         with:
-          name: OriginesGeographiques-macOS
-          path: OriginesGeographiques-macOS.zip
-          if-no-files-found: error
+          name: GeoGEDCOM-macOS
+          path: dist/GeoGEDCOM-macOS.zip
