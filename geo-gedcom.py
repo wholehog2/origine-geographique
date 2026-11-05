@@ -14,8 +14,7 @@ Fonctionnement
    écrit en HTML (interactif) et, en option, en JPEG et en CSV.
 
 Dépendances (à installer une fois) :
-    pip install plotly numpy
-    pip install -U kaleido      # uniquement pour l'export JPEG
+    pip install plotly numpy pillow
 
 Tkinter est fourni avec Python (sous Linux : paquet "python3-tk").
 """
@@ -383,6 +382,15 @@ def couleur_avec_transparence(couleur, alpha=0.45):
     return couleur
 
 
+def _rgb(couleur):
+    """'rgb(1, 2, 3)' ou '#rrggbb' -> (r, g, b)."""
+    if couleur.startswith("rgb"):
+        v = couleur[couleur.index("(") + 1:couleur.index(")")].split(",")
+        return int(v[0]), int(v[1]), int(v[2])
+    h = couleur.lstrip("#")
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
 def points_courbe_bezier(np, x0, y0, x1, y1, n=24):
     """Courbe en S, tangente horizontale aux deux extrémités."""
     x_milieu = (x0 + x1) / 2
@@ -509,6 +517,7 @@ def construire_figure(liens, p):
 
     # --- Rubans --------------------------------------------------------
     fig = go.Figure()
+    geo = dict(rubans=[], cases=[], textes=[])   # pour l'export Pillow
     for l in liens:
         xd = pos[l["_cs"]]["xd"]
         xa = pos[l["_cc"]]["xg"]
@@ -516,6 +525,10 @@ def construire_figure(liens, p):
         y1h, y1b = arrivee[l["_idx"]]
         xh, yh = points_courbe_bezier(np, xd, y0h, xa, y1h)
         xb, yb = points_courbe_bezier(np, xd, y0b, xa, y1b)
+        geo["rubans"].append((
+            np.concatenate([xh, xb[::-1]]),
+            np.concatenate([yh, yb[::-1]]),
+            _rgb(couleurs[l["lieu_source"]])))
         fig.add_trace(go.Scatter(
             x=np.concatenate([xh, xb[::-1]]),
             y=np.concatenate([yh, yb[::-1]]),
@@ -535,6 +548,10 @@ def construire_figure(liens, p):
     for c in cles:
         g, lieu = c
         q = pos[c]
+        geo["cases"].append((q["xg"], q["yh"], q["xd"], q["yb"],
+                             _rgb(couleurs[lieu])))
+        geo["textes"].append((q["xd"] + 8, (q["yh"] + q["yb"]) / 2,
+                              lieu, "lm", 13, True))
         fig.add_trace(go.Scatter(
             x=[q["xg"], q["xd"], q["xd"], q["xg"], q["xg"]],
             y=[q["yh"], q["yh"], q["yb"], q["yb"], q["yh"]],
@@ -554,6 +571,11 @@ def construire_figure(liens, p):
 
     for g in generations:
         c0 = noeuds_gen[g][0]
+        xc = (pos[c0]["xg"] + pos[c0]["xd"]) / 2
+        geo["textes"].append((xc, -18 - 22, f"Génération {g}", "mm", 15,
+                              False))
+        geo["textes"].append((xc, -18 - 6, f"Total : {total_gen[g]:g}",
+                              "mm", 12, False))
         annotations.append(dict(
             x=(pos[c0]["xg"] + pos[c0]["xd"]) / 2, y=-18,
             xref="x", yref="y",
@@ -580,7 +602,116 @@ def construire_figure(liens, p):
                    range=[HAUTEUR_FIG - MARGE_BAS, -30], fixedrange=True),
         hoverlabel=dict(bgcolor="white", font_size=13),
     )
+    geo.update(largeur=largeur_fig, hauteur=HAUTEUR_FIG,
+               marge_bas=MARGE_BAS, titre=p["titre"])
+    fig._geo = geo
     return fig
+
+
+def exporter_jpeg_pillow(geo, chemin, echelle):
+    """Export JPEG sans kaleido ni Chrome : dessin direct avec Pillow.
+
+    Reprend exactement la géométrie calculée pour la figure Plotly.
+    """
+    from PIL import Image, ImageDraw, ImageFont
+
+    W, H = geo["largeur"], geo["hauteur"]
+    # Sur-échantillonnage x2 pour le lissage, sauf image trop grande.
+    ss = 2 if max(W, H) * echelle * 2 <= 9000 else 1
+    k = echelle * ss
+    taille = (max(1, int(W * k)), max(1, int(H * k)))
+
+    def px(x):
+        return (10 + x * (W - 20) / W) * k
+
+    def py(y):
+        return (90 + (y + 30) * (H - 100) / (H - 30)) * k
+
+    CANDIDATES = (
+        "arial.ttf", "Arial.ttf", "segoeui.ttf", "DejaVuSans.ttf",
+        "LiberationSans-Regular.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/Library/Fonts/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/TTF/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+    )
+    etat = {"chemin": None, "teste": False}
+
+    def police(pt):
+        taille_pt = max(6, int(pt * k))
+        if not etat["teste"]:
+            etat["teste"] = True
+            for nom in CANDIDATES:
+                try:
+                    ImageFont.truetype(nom, 10)
+                    etat["chemin"] = nom
+                    break
+                except OSError:
+                    continue
+        if etat["chemin"]:
+            return ImageFont.truetype(etat["chemin"], taille_pt)
+        try:                        # police intégrée, sans accents
+            return ImageFont.load_default(size=taille_pt)
+        except TypeError:           # Pillow < 10.1
+            return ImageFont.load_default()
+
+    def texte_sur(t):
+        """Sans police système, la police intégrée n'a pas les accents."""
+        police(10)
+        if etat["chemin"]:
+            return t
+        import unicodedata
+        return "".join(c for c in unicodedata.normalize("NFKD", t)
+                       if not unicodedata.combining(c))
+
+    image = Image.new("RGBA", taille, (255, 255, 255, 255))
+
+    # Rubans : chacun dessiné sur un petit calque (boîte englobante).
+    for xs, ys, (r, g, b) in geo["rubans"]:
+        pts = [(px(x), py(y)) for x, y in zip(xs, ys)]
+        x0 = int(min(p[0] for p in pts)) - 1
+        y0 = int(min(p[1] for p in pts)) - 1
+        x1 = int(max(p[0] for p in pts)) + 2
+        y1 = int(max(p[1] for p in pts)) + 2
+        calque = Image.new("RGBA", (x1 - x0, y1 - y0), (0, 0, 0, 0))
+        ImageDraw.Draw(calque).polygon(
+            [(a - x0, b_ - y0) for a, b_ in pts],
+            fill=(r, g, b, int(0.45 * 255)))
+        image.alpha_composite(calque, (x0, y0))
+
+    d = ImageDraw.Draw(image)
+    for xg, yh, xd, yb, (r, g, b) in geo["cases"]:
+        d.rectangle([px(xg), py(yh), px(xd), py(yb)],
+                    fill=(r, g, b, 255), outline=(120, 120, 120, 255),
+                    width=max(1, int(k / 2)))
+
+    for x, y, texte, ancre, pt, fond in geo["textes"]:
+        texte = texte_sur(texte)
+        f = police(pt)
+        xx, yy = px(x), py(y)
+        if fond:
+            bbox = d.textbbox((xx, yy), texte, font=f, anchor=ancre)
+            marge = 2 * k
+            calque = Image.new("RGBA", image.size, (0, 0, 0, 0))
+            ImageDraw.Draw(calque).rectangle(
+                [bbox[0] - marge, bbox[1] - marge,
+                 bbox[2] + marge, bbox[3] + marge],
+                fill=(255, 255, 255, 190))
+            image.alpha_composite(calque)
+            d = ImageDraw.Draw(image)
+        d.text((xx, yy), texte, font=f, fill=(51, 51, 51, 255),
+               anchor=ancre)
+
+    d.text((image.size[0] / 2, 38 * k), texte_sur(geo["titre"]), font=police(20),
+           fill=(30, 30, 30, 255), anchor="mm")
+
+    if ss > 1:
+        image = image.resize((int(W * echelle), int(H * echelle)),
+                             Image.LANCZOS)
+    image.convert("RGB").save(chemin, "JPEG", quality=92)
 
 
 def exporter_csv(liens, chemin):
@@ -599,6 +730,36 @@ def exporter_csv(liens, chemin):
 # ============================================================
 # 5. TRAITEMENT COMPLET (utilisé par l'interface)
 # ============================================================
+
+def exporter_jpeg(fig, chemin, echelle, log, delai=60):
+    """Essaie kaleido (plotly) ; en cas d'échec, de blocage ou d'absence,
+    bascule sur le dessin direct avec Pillow (aucun Chrome requis)."""
+    erreur = []
+
+    def via_kaleido():
+        try:
+            fig.write_image(chemin, format="jpeg", scale=echelle)
+        except BaseException as e:        # noqa : on veut tout capturer
+            erreur.append(e)
+
+    t = threading.Thread(target=via_kaleido, daemon=True)
+    t.start()
+    t.join(delai)
+    if not t.is_alive() and not erreur:
+        log(f"Image JPEG créée (kaleido) : {chemin}")
+        return
+
+    if t.is_alive():
+        log(f"kaleido ne répond pas après {delai} s.")
+    else:
+        log(f"kaleido indisponible : {erreur[0]!r}")
+    log("Export JPEG avec Pillow à la place…")
+    try:
+        exporter_jpeg_pillow(fig._geo, chemin, echelle)
+        log(f"Image JPEG créée (Pillow) : {chemin}")
+    except Exception:
+        log("Échec de l'export JPEG :\n" + traceback.format_exc())
+
 
 def generer(p, log):
     """Pipeline complet. Retourne le chemin du HTML créé."""
@@ -629,14 +790,7 @@ def generer(p, log):
     log(f"Diagramme créé : {p['html']}")
 
     if p["jpeg"]:
-        try:
-            fig.write_image(p["jpeg"], format="jpeg",
-                            scale=p["resolution_jpeg"])
-            log(f"Image JPEG créée : {p['jpeg']}")
-        except Exception as e:
-            log("Échec de l'export JPEG : "
-                f"{e}\n -> Vérifiez que 'kaleido' est installé "
-                "(pip install -U kaleido).")
+        exporter_jpeg(fig, p["jpeg"], p["resolution_jpeg"], log)
     return p["html"]
 
 
@@ -1199,7 +1353,7 @@ def main():
             "Modules manquants",
             "Modules Python à installer :\n\n"
             f"    pip install {' '.join(manquants)}\n\n"
-            "(et, pour l'export JPEG : pip install -U kaleido)")
+            "(et, pour l'export JPEG : pip install pillow)")
         racine.destroy()
         sys.exit(1)
 
