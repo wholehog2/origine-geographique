@@ -15,10 +15,10 @@ jobs:
 
     steps:
       - name: Récupérer le code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Installer Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -32,7 +32,7 @@ jobs:
           pyinstaller --noconfirm --clean --windowed --onefile --name GeoGEDCOM geo-gedcom.py
 
       - name: Publier le programme Windows
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: GeoGEDCOM-Windows
           path: dist/GeoGEDCOM.exe
@@ -43,10 +43,10 @@ jobs:
 
     steps:
       - name: Récupérer le code
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Installer Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
@@ -65,7 +65,7 @@ jobs:
           zip -r GeoGEDCOM-macOS.zip GeoGEDCOM.app
 
       - name: Publier le programme macOS
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: GeoGEDCOM-macOS
           path: dist/GeoGEDCOM-macOS.zip
