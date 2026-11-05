@@ -1,1 +1,68 @@
+name: Compiler Origines géographiques
 
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compilation ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
+
+      - name: Installer Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install numpy plotly pyinstaller
+
+      - name: Compiler sous Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir `
+            --name OriginesGeographiques `
+            diag-gedcom-moderne3-corrige.py
+          Compress-Archive -Path dist/OriginesGeographiques `
+            -DestinationPath OriginesGeographiques-Windows.zip -Force
+
+      - name: Compiler sous macOS
+        if: runner.os == 'macOS'
+        run: |
+          pyinstaller --noconfirm --clean --windowed --onedir \
+            --name OriginesGeographiques \
+            diag-gedcom-moderne3-corrige.py
+          ditto -c -k --sequesterRsrc --keepParent \
+            dist/OriginesGeographiques.app \
+            OriginesGeographiques-macOS.zip
+
+      - name: Publier le programme Windows
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OriginesGeographiques-Windows
+          path: OriginesGeographiques-Windows.zip
+          if-no-files-found: error
+
+      - name: Publier le programme macOS
+        if: runner.os == 'macOS'
+        uses: actions/upload-artifact@v4
+        with:
+          name: OriginesGeographiques-macOS
+          path: OriginesGeographiques-macOS.zip
+          if-no-files-found: error
