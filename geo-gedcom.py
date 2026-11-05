@@ -1008,7 +1008,7 @@ class Application(ttk.Frame):
         ttk.Radiobutton(g, text="Compter depuis la fin (pays = 1)",
                         variable=self.v_sens, value="fin").grid(
             row=4, column=0, columnspan=2, sticky="w")
-        ttk.Radiobutton(g, text="Compter depuis le début (commune = 1)",
+        ttk.Radiobutton(g, text="Compter depuis le début (subdivision = 1)",
                         variable=self.v_sens, value="debut").grid(
             row=5, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(g, text="Utiliser le baptême si naissance absente",
