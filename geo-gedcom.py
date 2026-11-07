@@ -785,6 +785,16 @@ def exporter_csv(liens, chemin):
 def exporter_jpeg(fig, chemin, echelle, log, delai=60):
     """Essaie kaleido (plotly) ; en cas d'échec, de blocage ou d'absence,
     bascule sur le dessin direct avec Pillow (aucun Chrome requis)."""
+    import importlib.util
+    if importlib.util.find_spec("kaleido") is None:
+        log("Export JPEG avec Pillow…")
+        try:
+            exporter_jpeg_pillow(fig._geo, chemin, echelle)
+            log(f"Image JPEG créée (Pillow) : {chemin}")
+        except Exception:
+            log("Échec de l'export JPEG :\n" + traceback.format_exc())
+        return
+
     erreur = []
 
     def via_kaleido():
@@ -1232,7 +1242,7 @@ class Application(ttk.Frame):
                  f"{len(self.familles)} familles.")
         self.v_recherche.set("")
         self._filtrer(selection=self.premier)
-        self._maj_apercu_lieux()
+        self._maj_apercu_lieux(ajuster=True)
 
     def _libelle(self, xref):
         i = self.individus[xref]
@@ -1266,8 +1276,11 @@ class Application(ttk.Frame):
             return None
         return self.liste_affichee[sel[0]]
 
-    def _maj_apercu_lieux(self):
-        """Montre comment quelques lieux du fichier seront découpés."""
+    def _maj_apercu_lieux(self, ajuster=False):
+        """Montre comment quelques lieux du fichier seront découpés.
+
+        La fenêtre n'est redimensionnée qu'au chargement d'un fichier
+        (ajuster=True), pas à chaque changement de réglage."""
         if not self.individus:
             return
         try:
@@ -1294,7 +1307,8 @@ class Application(ttk.Frame):
 
         # Ajuste automatiquement la taille de la fenêtre pour rendre
         # l'aperçu aussi lisible que possible, sans dépasser l'écran.
-        self._ajuster_fenetre_apercu(lignes or ["(aucun lieu)"])
+        if ajuster:
+            self._ajuster_fenetre_apercu(lignes or ["(aucun lieu)"])
 
     def _ajuster_fenetre_apercu(self, lignes):
         """Ajuste la largeur si possible ; la hauteur reste défilante."""
@@ -1410,10 +1424,10 @@ class Application(ttk.Frame):
 
 def verifier_dependances():
     manquants = []
+    import importlib.util
     for nom in ("numpy", "plotly"):
-        try:
-            __import__(nom)
-        except ImportError:
+        # find_spec ne charge pas le module : démarrage immédiat.
+        if importlib.util.find_spec(nom) is None:
             manquants.append(nom)
     return manquants
 
