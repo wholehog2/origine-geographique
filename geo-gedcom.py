@@ -182,7 +182,7 @@ def extraire_annee(date):
 
 
 def lire_gedcom(chemin):
-    """Retourne (individus, familles).
+    """Retourne (individus, familles, format_lieu).
 
     individus : xref -> dict(nom, lieu_naissance, lieu_bapteme,
                              annee, famc=[xref de familles])
@@ -193,6 +193,7 @@ def lire_gedcom(chemin):
     individus = {}
     familles = {}
 
+    format_lieu = None    # ex. ["Town", "Area code", ..., "Country", ...]
     courant = None        # enregistrement de niveau 0 en cours
     type_courant = None   # "INDI", "FAM" ou None
     tag1 = None           # dernière balise de niveau 1
@@ -221,6 +222,8 @@ def lire_gedcom(chemin):
                 courant = dict(pere=None, mere=None)
                 familles[xref] = courant
                 type_courant = "FAM"
+            elif tag == "HEAD":
+                courant, type_courant = dict(), "HEAD"
             else:
                 courant, type_courant = None, None
             continue
@@ -243,7 +246,10 @@ def lire_gedcom(chemin):
                 elif tag == "WIFE":
                     courant["mere"] = valeur
         elif niveau == 2:
-            if type_courant == "INDI":
+            if type_courant == "HEAD":
+                if tag1 == "PLAC" and tag == "FORM" and valeur:
+                    format_lieu = [x.strip() for x in valeur.split(",")]
+            elif type_courant == "INDI":
                 if tag1 == "BIRT":
                     if tag == "PLAC" and not courant["lieu_naissance"]:
                         courant["lieu_naissance"] = valeur
@@ -262,7 +268,7 @@ def lire_gedcom(chemin):
     for indi in individus.values():
         indi["famc"] = [f["xref"] for f in indi["famc"] if f["ok"]]
 
-    return individus, familles
+    return individus, familles, format_lieu
 
 
 def parents_de(xref, individus, familles):
@@ -289,7 +295,34 @@ def parents_de(xref, individus, familles):
 LIEU_INCONNU = "Lieu inconnu"
 
 
-def extraire_lieu(brut, niveau, depuis_la_fin):
+NOMS_PAYS = ("country", "pays")
+
+
+def indice_pays(format_lieu):
+    """Position (à partir de 0) du pays d'après la déclaration
+    'PLAC / FORM' de l'en-tête du GEDCOM, ou None si absente."""
+    for i, nom in enumerate(format_lieu or []):
+        if nom.strip().casefold() in NOMS_PAYS:
+            return i
+    return None
+
+
+def extraire_pays(parts, index_pays):
+    """Pays d'un lieu déjà découpé ('' si non renseigné).
+
+    On utilise la position annoncée par l'en-tête du GEDCOM ; à défaut
+    (ou si le lieu est trop court), on prend le dernier élément rempli.
+    """
+    if index_pays is not None and index_pays < len(parts):
+        return parts[index_pays]
+    for p in reversed(parts):
+        if p:
+            return p
+    return ""
+
+
+def extraire_lieu(brut, niveau, depuis_la_fin, ajouter_pays=False,
+                  pays_en_premier=False, index_pays=None):
     """Extrait le composant de lieu voulu dans 'Ville, CP, Dept, Pays'.
 
     Les composants vides sont CONSERVÉS pour ne pas décaler les niveaux :
@@ -300,6 +333,10 @@ def extraire_lieu(brut, niveau, depuis_la_fin):
 
     niveau : 1 = premier composant (en partant de la fin ou du début).
     Si le lieu a moins de composants, on prend le plus proche.
+
+    ajouter_pays : ajoute le pays au lieu, séparé par un tiret, avant
+    (pays_en_premier) ou après. Rien n'est ajouté si le pays est vide
+    ou identique au lieu retenu.
     """
     if not brut or not brut.strip():
         return LIEU_INCONNU
@@ -309,7 +346,14 @@ def extraire_lieu(brut, niveau, depuis_la_fin):
         i = max(len(parts) - niveau, 0)
     else:
         i = min(niveau - 1, len(parts) - 1)
-    return parts[i] or LIEU_INCONNU
+    lieu = parts[i] or LIEU_INCONNU
+
+    if ajouter_pays:
+        pays = extraire_pays(parts, index_pays)
+        if pays and pays.casefold() != lieu.casefold():
+            return f"{pays} - {lieu}" if pays_en_premier \
+                else f"{lieu} - {pays}"
+    return lieu
 
 
 # ============================================================
@@ -317,7 +361,9 @@ def extraire_lieu(brut, niveau, depuis_la_fin):
 # ============================================================
 
 def construire_liens(individus, familles, racine, nb_generations,
-                     niveau_lieu, depuis_la_fin, utiliser_bapteme):
+                     niveau_lieu, depuis_la_fin, utiliser_bapteme,
+                     ajouter_pays=False, pays_en_premier=False,
+                     index_pays=None):
     """Remonte l'ascendance de 'racine' sur 'nb_generations' générations.
 
     Retourne une liste de dicts :
@@ -333,7 +379,8 @@ def construire_liens(individus, familles, racine, nb_generations,
         brut = indi["lieu_naissance"]
         if not brut and utiliser_bapteme:
             brut = indi["lieu_bapteme"]
-        return extraire_lieu(brut, niveau_lieu, depuis_la_fin)
+        return extraire_lieu(brut, niveau_lieu, depuis_la_fin,
+                             ajouter_pays, pays_en_premier, index_pays)
 
     lieux_indi = {}
 
@@ -767,13 +814,14 @@ def exporter_jpeg(fig, chemin, echelle, log, delai=60):
 
 def generer(p, log):
     """Pipeline complet. Retourne le chemin du HTML créé."""
-    individus, familles = lire_gedcom(p["gedcom"])
+    individus, familles, format_lieu = lire_gedcom(p["gedcom"])
     log(f"GEDCOM relu : {len(individus)} individus, "
         f"{len(familles)} familles.")
 
     liens = construire_liens(
         individus, familles, p["racine"], p["nb_generations"],
         p["niveau_lieu"], p["depuis_la_fin"], p["utiliser_bapteme"],
+        p["ajouter_pays"], p["pays_en_premier"], indice_pays(format_lieu),
     )
     if not liens:
         raise ValueError(
@@ -843,6 +891,9 @@ class Application(ttk.Frame):
         self.v_niveau = tk.IntVar(value=3)
         self.v_sens = tk.StringVar(value="fin")
         self.v_bapteme = tk.BooleanVar(value=True)
+        self.v_pays = tk.BooleanVar(value=False)
+        self.v_pays_premier = tk.BooleanVar(value=False)
+        self.format_lieu = None
 
         self.v_titre = tk.StringVar(value="Évolution des origines "
                                           "géographiques")
@@ -860,10 +911,19 @@ class Application(ttk.Frame):
         self.v_ouvrir = tk.BooleanVar(value=True)
 
         self._construire_ui()
-        for v in (self.v_niveau, self.v_sens):
+        for v in (self.v_niveau, self.v_sens, self.v_pays,
+                  self.v_pays_premier):
             v.trace_add("write", lambda *a: self._maj_apercu_lieux())
+        self.v_pays.trace_add("write", lambda *a: self._maj_etat_pays())
+        self._maj_etat_pays()
         self.v_recherche.trace_add("write", lambda *a: self._filtrer())
         self.after(150, self._lire_logs)
+
+    def _maj_etat_pays(self):
+        """Grise « pays en premier » tant que « ajouter le pays » n'est
+        pas coché."""
+        etat = "normal" if self.v_pays.get() else "disabled"
+        self.chk_pays_premier.configure(state=etat)
 
     def _maj_zone_defilante(self, event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
@@ -1008,23 +1068,32 @@ class Application(ttk.Frame):
         ttk.Radiobutton(g, text="Compter depuis la fin (pays = 1)",
                         variable=self.v_sens, value="fin").grid(
             row=4, column=0, columnspan=2, sticky="w")
-        ttk.Radiobutton(g, text="Compter depuis le début (subdivision = 1)",
+        ttk.Radiobutton(g, text="Compter depuis le début (commune = 1)",
                         variable=self.v_sens, value="debut").grid(
             row=5, column=0, columnspan=2, sticky="w")
         ttk.Checkbutton(g, text="Utiliser le baptême si naissance absente",
                         variable=self.v_bapteme).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(3, 7))
+            row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
+        ttk.Checkbutton(g, text="Ajouter le pays (séparé par un tiret)",
+                        variable=self.v_pays).grid(
+            row=7, column=0, columnspan=2, sticky="w")
+        self.chk_pays_premier = ttk.Checkbutton(
+            g, text="Pays en premier (décoché : pays en dernier)",
+            variable=self.v_pays_premier)
+        self.chk_pays_premier.grid(
+            row=8, column=0, columnspan=2, sticky="w", padx=(22, 0),
+            pady=(0, 7))
         ttk.Label(g, text="APERÇU  ·  LIEU RETENU  ←  LIEU GEDCOM",
                   style="Muted.TLabel").grid(
-            row=7, column=0, columnspan=2, sticky="w", pady=(5, 5))
+            row=9, column=0, columnspan=2, sticky="w", pady=(5, 5))
         self.apercu = tk.Text(
             g, height=6, width=42, wrap="word", state="disabled",
             background="#f8fafc", foreground=c["texte"],
             relief="flat", borderwidth=0, padx=9, pady=8,
             highlightthickness=1, highlightbackground=c["bordure"],
             font=("DejaVu Sans", 9))
-        self.apercu.grid(row=8, column=0, columnspan=2, sticky="nsew")
-        g.rowconfigure(8, weight=1)
+        self.apercu.grid(row=10, column=0, columnspan=2, sticky="nsew")
+        g.rowconfigure(10, weight=1)
 
         # 3. Apparence du diagramme
         a = ttk.LabelFrame(contenu, text="  3  ·  Apparence du diagramme  ",
@@ -1142,7 +1211,8 @@ class Application(ttk.Frame):
 
     def _charger(self, chemin):
         try:
-            self.individus, self.familles = lire_gedcom(chemin)
+            (self.individus, self.familles,
+             self.format_lieu) = lire_gedcom(chemin)
         except Exception as e:
             messagebox.showerror("Lecture impossible", str(e))
             return
@@ -1209,8 +1279,10 @@ class Application(ttk.Frame):
             brut = indi["lieu_naissance"] or indi["lieu_bapteme"]
             if brut and brut not in vus:
                 vus.add(brut)
-                retenu = extraire_lieu(brut, niveau,
-                                       self.v_sens.get() == "fin")
+                retenu = extraire_lieu(
+                    brut, niveau, self.v_sens.get() == "fin",
+                    self.v_pays.get(), self.v_pays_premier.get(),
+                    indice_pays(self.format_lieu))
                 lignes.append(f"{retenu}  ←  {brut}")
             if len(lignes) >= 12:
                 break
@@ -1273,6 +1345,8 @@ class Application(ttk.Frame):
                 niveau_lieu=int(self.v_niveau.get()),
                 depuis_la_fin=self.v_sens.get() == "fin",
                 utiliser_bapteme=self.v_bapteme.get(),
+                ajouter_pays=self.v_pays.get(),
+                pays_en_premier=self.v_pays_premier.get(),
                 titre=self.v_titre.get(),
                 pixels_par_unite=float(self.v_px_unite.get()),
                 pad_noeuds=float(self.v_pad.get()),
