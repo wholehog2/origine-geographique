@@ -29,7 +29,7 @@ jobs:
 
       - name: Compiler le programme
         run: |
-          pyinstaller --noconfirm --clean --windowed --collect-data plotly --collect-all tkinterdnd2 --exclude-module kaleido --name GeoGEDCOM geo-gedcom.py
+          pyinstaller --noconfirm --clean --windowed --icon boussole.ico --collect-data plotly --collect-all tkinterdnd2 --exclude-module kaleido --name GeoGEDCOM geo-gedcom.py
 
       - name: Publier le programme Windows
         uses: actions/upload-artifact@v7
@@ -58,7 +58,7 @@ jobs:
 
       - name: Compiler le programme
         run: |
-          pyinstaller --noconfirm --clean --windowed --collect-data plotly --collect-all tkinterdnd2 --exclude-module kaleido --name GeoGEDCOM geo-gedcom.py
+          pyinstaller --noconfirm --clean --windowed --icon boussole.icns --collect-data plotly --collect-all tkinterdnd2 --exclude-module kaleido --name GeoGEDCOM geo-gedcom.py
 
       - name: Créer l'archive macOS
         run: |
