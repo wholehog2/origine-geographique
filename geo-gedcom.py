@@ -31,7 +31,17 @@ import webbrowser
 from collections import Counter, defaultdict
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox, font as tkfont
+from tkinter import ttk, filedialog, messagebox
+
+
+# ============================================================
+# 0. VERSION
+# ============================================================
+
+# Numéro de version : à changer ici à chaque publication. Il s'affiche
+# en haut à droite de la fenêtre, dans son titre, dans le journal, et avec
+#     python geo-gedcom.py --version
+VERSION = "1.02"
 
 
 # ============================================================
@@ -659,8 +669,8 @@ def construire_figure(liens, p):
     return fig
 
 
-def exporter_jpeg_pillow(geo, chemin, echelle):
-    """Export JPEG sans kaleido ni Chrome : dessin direct avec Pillow.
+def exporter_image_pillow(geo, chemin, echelle, fmt="jpeg"):
+    """Export JPEG/PNG sans kaleido ni Chrome : dessin direct avec Pillow.
 
     Reprend exactement la géométrie calculée pour la figure Plotly.
     """
@@ -762,7 +772,40 @@ def exporter_jpeg_pillow(geo, chemin, echelle):
     if ss > 1:
         image = image.resize((int(W * echelle), int(H * echelle)),
                              Image.LANCZOS)
-    image.convert("RGB").save(chemin, "JPEG", quality=92)
+    image = image.convert("RGB")
+    if fmt == "png":
+        image.save(chemin, "PNG", optimize=True)
+    else:
+        image.save(chemin, "JPEG", quality=92)
+
+
+def nom_fichier_sur(texte):
+    """Nettoie un texte pour en faire un nom de fichier valide partout."""
+    texte = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "", texte or "")
+    return re.sub(r"\s+", " ", texte).strip(" .")
+
+
+def chemin_image(dossier, nom, fmt):
+    """Chemin final de l'image : l'extension suit le format choisi
+    (jpg ou png), quelle que soit celle que l'utilisateur a tapée."""
+    nom = nom_fichier_sur(nom) or "Origine géographique"
+    base, ext = os.path.splitext(nom)
+    if ext.lower() in (".jpg", ".jpeg", ".png"):
+        nom = base
+    return os.path.join(dossier, nom + (".png" if fmt == "png" else ".jpg"))
+
+
+def normaliser_chemin_depose(texte):
+    """Chemin local à partir de ce que fournit un glisser-déposer ou un
+    collage : chemin simple, entre guillemets, ou URI 'file:///...'
+    (avec %20 pour les espaces)."""
+    from urllib.parse import unquote, urlparse
+    t = (texte or "").strip().strip("\"'")
+    if t.lower().startswith("file:"):
+        t = unquote(urlparse(t).path)
+        if re.match(r"^/[A-Za-z]:", t):       # file:///C:/... (Windows)
+            t = t[1:]
+    return t
 
 
 def exporter_csv(liens, chemin):
@@ -782,24 +825,32 @@ def exporter_csv(liens, chemin):
 # 5. TRAITEMENT COMPLET (utilisé par l'interface)
 # ============================================================
 
-def exporter_jpeg(fig, chemin, echelle, log, delai=60):
-    """Essaie kaleido (plotly) ; en cas d'échec, de blocage ou d'absence,
-    bascule sur le dessin direct avec Pillow (aucun Chrome requis)."""
+def exporter_image(fig, chemin, echelle, log, fmt="jpeg", delai=60):
+    """Exporte la figure en JPEG ou PNG.
+
+    Essaie kaleido (plotly) s'il est installé ; en cas d'échec, de
+    blocage ou d'absence, bascule sur le dessin direct avec Pillow
+    (aucun Chrome requis)."""
     import importlib.util
-    if importlib.util.find_spec("kaleido") is None:
-        log("Export JPEG avec Pillow…")
+    nom = fmt.upper()
+
+    def via_pillow():
+        log(f"Export {nom} avec Pillow…")
         try:
-            exporter_jpeg_pillow(fig._geo, chemin, echelle)
-            log(f"Image JPEG créée (Pillow) : {chemin}")
+            exporter_image_pillow(fig._geo, chemin, echelle, fmt)
+            log(f"Image {nom} créée (Pillow) : {chemin}")
         except Exception:
-            log("Échec de l'export JPEG :\n" + traceback.format_exc())
+            log(f"Échec de l'export {nom} :\n" + traceback.format_exc())
+
+    if importlib.util.find_spec("kaleido") is None:
+        via_pillow()
         return
 
     erreur = []
 
     def via_kaleido():
         try:
-            fig.write_image(chemin, format="jpeg", scale=echelle)
+            fig.write_image(chemin, format=fmt, scale=echelle)
         except BaseException as e:        # noqa : on veut tout capturer
             erreur.append(e)
 
@@ -807,19 +858,14 @@ def exporter_jpeg(fig, chemin, echelle, log, delai=60):
     t.start()
     t.join(delai)
     if not t.is_alive() and not erreur:
-        log(f"Image JPEG créée (kaleido) : {chemin}")
+        log(f"Image {nom} créée (kaleido) : {chemin}")
         return
 
     if t.is_alive():
         log(f"kaleido ne répond pas après {delai} s.")
     else:
         log(f"kaleido indisponible : {erreur[0]!r}")
-    log("Export JPEG avec Pillow à la place…")
-    try:
-        exporter_jpeg_pillow(fig._geo, chemin, echelle)
-        log(f"Image JPEG créée (Pillow) : {chemin}")
-    except Exception:
-        log("Échec de l'export JPEG :\n" + traceback.format_exc())
+    via_pillow()
 
 
 def generer(p, log):
@@ -851,8 +897,9 @@ def generer(p, log):
     fig.write_html(p["html"], include_plotlyjs=True, full_html=True)
     log(f"Diagramme créé : {p['html']}")
 
-    if p["jpeg"]:
-        exporter_jpeg(fig, p["jpeg"], p["resolution_jpeg"], log)
+    if p.get("image"):
+        exporter_image(fig, p["image"], p["resolution_image"], log,
+                       p["format_image"])
     return p["html"]
 
 
@@ -862,13 +909,17 @@ def generer(p, log):
 
 class Application(ttk.Frame):
 
-    def __init__(self, master):
+    def __init__(self, master, dnd=False, erreur_dnd=None):
         super().__init__(master, padding=10)
         self.master = master
-        master.title("Origines géographiques · Analyse GEDCOM")
+        self.dnd = dnd      # glisser-déposer disponible (tkinterdnd2)
+        self.erreur_dnd = erreur_dnd
+        master.title(f"Origines géographiques · Analyse GEDCOM  —  "
+                     f"version {VERSION}")
         master.configure(bg="#eef2f7")
         master.option_add("*Font", ("DejaVu Sans", 10))
         self._configurer_style()
+        self.configure(style="App.TFrame")
         self.pack(fill="both", expand=True)
 
         # Zone de contenu défilante : tous les réglages restent accessibles,
@@ -877,7 +928,7 @@ class Application(ttk.Frame):
                                 background="#eef2f7")
         self.scrollbar = ttk.Scrollbar(self, orient="vertical",
                                        command=self.canvas.yview)
-        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        self.canvas.configure(yscrollcommand=self._maj_barre)
         self.scrollbar.pack(side="right", fill="y")
         self.canvas.pack(side="left", fill="both", expand=True)
         self.contenu = ttk.Frame(self.canvas)
@@ -885,9 +936,11 @@ class Application(ttk.Frame):
             (0, 0), window=self.contenu, anchor="nw")
         self.contenu.bind("<Configure>", self._maj_zone_defilante)
         self.canvas.bind("<Configure>", self._adapter_largeur_contenu)
+        # Molette : fait défiler l'interface, sauf au-dessus de la liste
+        # des individus et des zones de texte (voir _lier_molette).
         self.canvas.bind_all("<MouseWheel>", self._defiler_souris)
-        self.canvas.bind_all("<Button-4>", lambda e: self.canvas.yview_scroll(-3, "units"))
-        self.canvas.bind_all("<Button-5>", lambda e: self.canvas.yview_scroll(3, "units"))
+        self.canvas.bind_all("<Button-4>", self._defiler_souris)
+        self.canvas.bind_all("<Button-5>", self._defiler_souris)
 
         self.individus = {}
         self.familles = {}
@@ -914,9 +967,12 @@ class Application(ttk.Frame):
         self.v_esp_col = tk.DoubleVar(value=260)
 
         self.v_html = tk.StringVar()
-        self.v_jpeg_on = tk.BooleanVar(value=False)
-        self.v_jpeg = tk.StringVar()
+        self.v_img_on = tk.BooleanVar(value=False)
+        self.v_format = tk.StringVar(value="jpg")
+        self.v_nom_image = tk.StringVar()
+        self.v_dossier_image = tk.StringVar()
         self.v_resolution = tk.DoubleVar(value=2)
+        self._nom_image_auto = ""
         self.v_csv_on = tk.BooleanVar(value=False)
         self.v_ouvrir = tk.BooleanVar(value=True)
 
@@ -926,8 +982,55 @@ class Application(ttk.Frame):
             v.trace_add("write", lambda *a: self._maj_apercu_lieux())
         self.v_pays.trace_add("write", lambda *a: self._maj_etat_pays())
         self._maj_etat_pays()
+        for v in (self.v_img_on, self.v_format, self.v_nom_image,
+                  self.v_dossier_image):
+            v.trace_add("write", lambda *a: self._maj_section_image())
+        self._maj_section_image()
         self.v_recherche.trace_add("write", lambda *a: self._filtrer())
+        if self.dnd:
+            self._activer_glisser_deposer()
         self.after(150, self._lire_logs)
+        self.log(f"Origines géographiques · version {VERSION}")
+        if self.erreur_dnd:
+            self.log("Glisser-déposer indisponible : " + self.erreur_dnd)
+        elif self.dnd and sys.platform.startswith("linux") and (
+                os.environ.get("WAYLAND_DISPLAY")
+                or os.environ.get("XDG_SESSION_TYPE") == "wayland"):
+            self.log("Session Wayland détectée : si le glisser-déposer ne "
+                     "réagit pas, collez le chemin du fichier dans le "
+                     "champ « Fichier GEDCOM » puis appuyez sur Entrée.")
+
+    def _maj_section_image(self):
+        """Active / désactive les champs de l'image et affiche le chemin
+        final (l'extension suit le format choisi)."""
+        etat = "normal" if self.v_img_on.get() else "disabled"
+        for w in self._widgets_image:
+            w.configure(state=etat)
+        dossier = (self.v_dossier_image.get().strip()
+                   or os.path.dirname(self.v_html.get().strip()) or ".")
+        chemin = chemin_image(dossier, self.v_nom_image.get(),
+                              self.v_format.get())
+        self.lbl_fichier_image.configure(text=f"Fichier : {chemin}")
+
+    def _maj_nom_image_auto(self, *_):
+        """Nom proposé : « Origine géographique de <individu> ». Il suit
+        la sélection tant que l'utilisateur ne l'a pas modifié."""
+        x = self._xref_selectionne() if self.individus else None
+        if not x:
+            return
+        auto = ("Origine géographique de "
+                + nom_fichier_sur(self.individus[x]["nom"]))
+        actuel = self.v_nom_image.get().strip()
+        if not actuel or actuel == self._nom_image_auto:
+            self.v_nom_image.set(auto)
+        self._nom_image_auto = auto
+
+    def _choisir_dossier_image(self):
+        d = filedialog.askdirectory(
+            title="Dossier de l'image",
+            initialdir=self.v_dossier_image.get() or None)
+        if d:
+            self.v_dossier_image.set(d)
 
     def _maj_etat_pays(self):
         """Grise « pays en premier » tant que « ajouter le pays » n'est
@@ -935,15 +1038,129 @@ class Application(ttk.Frame):
         etat = "normal" if self.v_pays.get() else "disabled"
         self.chk_pays_premier.configure(state=etat)
 
+    def _maj_barre(self, debut, fin):
+        """Masque la barre de défilement quand tout tient à l'écran."""
+        self.scrollbar.set(debut, fin)
+        visible = bool(self.scrollbar.winfo_manager())
+        if float(debut) <= 0.0 and float(fin) >= 1.0:
+            if visible:
+                self.scrollbar.pack_forget()
+        elif not visible:
+            self.scrollbar.pack(side="right", fill="y", before=self.canvas)
+
     def _maj_zone_defilante(self, event=None):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def _adapter_largeur_contenu(self, event):
         self.canvas.itemconfigure(self._fenetre_contenu, width=event.width)
 
+    @staticmethod
+    def _pas_molette(event):
+        """Nombre de lignes à faire défiler (négatif = vers le haut),
+        Windows / macOS (delta) et Linux (boutons 4 et 5)."""
+        if getattr(event, "num", None) == 4:
+            return -3
+        if getattr(event, "num", None) == 5:
+            return 3
+        d = int(getattr(event, "delta", 0) or 0)
+        if d == 0:
+            return 0
+        if abs(d) >= 120:            # Windows : multiples de 120
+            return -3 * int(d / 120)
+        return -d                    # macOS : petites valeurs
+
     def _defiler_souris(self, event):
-        if event.delta:
-            self.canvas.yview_scroll(int(-event.delta / 120), "units")
+        """Défilement de l'interface entière (sauf liste et zones de
+        texte, qui gèrent leur propre molette)."""
+        pas = self._pas_molette(event)
+        if pas and self.canvas.yview() != (0.0, 1.0):
+            self.canvas.yview_scroll(pas, "units")
+
+    def _lier_molette(self, widget):
+        """Au-dessus de ce widget, la molette le fait défiler lui seul
+        et ne fait plus défiler l'interface."""
+        def defiler(event):
+            pas = self._pas_molette(event)
+            if pas:
+                widget.yview_scroll(pas, "units")
+            return "break"          # n'atteint pas bind_all (interface)
+        for sequence in ("<MouseWheel>", "<Button-4>", "<Button-5>"):
+            widget.bind(sequence, defiler)
+
+    # ---------- glisser-déposer ----------
+    def _activer_glisser_deposer(self):
+        """Dépose d'un fichier .ged n'importe où dans la fenêtre."""
+        from tkinterdnd2 import DND_FILES
+
+        def enregistrer(widget):
+            try:
+                widget.drop_target_register(DND_FILES)
+                widget.dnd_bind("<<Drop>>", self._on_depot)
+            except Exception:
+                pass
+            for enfant in widget.winfo_children():
+                enregistrer(enfant)
+
+        enregistrer(self.master)
+
+    def _on_depot(self, event):
+        try:
+            elements = list(self.tk.splitlist(event.data or ""))
+        except tk.TclError:
+            elements = (event.data or "").split()
+        chemins = [normaliser_chemin_depose(x) for x in elements]
+        chemins = [c for c in chemins if c]
+        if not chemins:
+            self.log("Dépôt reçu sans fichier (données vides). Utilisez "
+                     "« Parcourir… » ou collez le chemin du fichier.")
+            return "copy"
+        chemin = chemins[0]
+        self.log(f"Fichier déposé : {chemin}")
+        self._ouvrir_gedcom_verifie(chemin)
+        return "copy"
+
+    def _ouvrir_gedcom_verifie(self, chemin):
+        if os.path.isdir(chemin):
+            messagebox.showwarning(
+                "Fichier GEDCOM", "Indiquez un fichier GEDCOM, pas un "
+                                  "dossier.")
+            return
+        if not os.path.isfile(chemin):
+            messagebox.showwarning(
+                "Fichier GEDCOM", f"Fichier introuvable :\n{chemin}")
+            return
+        if not chemin.lower().endswith((".ged", ".gedcom")):
+            if not messagebox.askyesno(
+                    "Fichier GEDCOM",
+                    "Ce fichier n'a pas l'extension .ged ou .gedcom.\n"
+                    "Essayer de le lire quand même ?"):
+                return
+        self._ouvrir_gedcom(chemin)
+
+    def _charger_depuis_champ(self, *_):
+        """Chemin tapé ou collé dans le champ « Fichier GEDCOM » (+ Entrée).
+        Repli utile quand le glisser-déposer n'est pas disponible."""
+        chemin = normaliser_chemin_depose(self.v_gedcom.get())
+        if chemin:
+            self._ouvrir_gedcom_verifie(chemin)
+
+    # ---------- taille de la fenêtre ----------
+    def ajuster_taille_fenetre(self):
+        """Dimensionne la fenêtre sur son contenu pour que tout soit
+        visible à l'ouverture (limitée à la taille de l'écran ; au-delà,
+        le défilement reste disponible)."""
+        self.update_idletasks()
+        ecran_l = self.winfo_screenwidth()
+        ecran_h = self.winfo_screenheight()
+        voulu_l = (self.contenu.winfo_reqwidth()
+                   + self.scrollbar.winfo_reqwidth() + 24)
+        voulu_h = self.contenu.winfo_reqheight() + 24
+        larg = min(voulu_l, ecran_l - 20)
+        haut = min(voulu_h, ecran_h - 90)
+        x = max((ecran_l - larg) // 2, 0)
+        y = max((ecran_h - haut) // 2 - 30, 0)
+        self.master.geometry(f"{larg}x{haut}+{x}+{y}")
+        self.master.minsize(min(larg, 900), min(haut, 520))
 
     # ---------- style et construction ----------
     def _configurer_style(self):
@@ -966,6 +1183,8 @@ class Application(ttk.Frame):
         }
         c = self.couleurs
         style.configure("App.TFrame", background=c["fond"])
+        style.configure("TFrame", background=c["carte"])
+        style.configure("TSeparator", background=c["bordure"])
         style.configure("Card.TLabelframe", background=c["carte"],
                         bordercolor=c["bordure"], relief="solid", borderwidth=1)
         style.configure("Card.TLabelframe.Label", background=c["carte"],
@@ -998,6 +1217,14 @@ class Application(ttk.Frame):
                         foreground=c["texte"], padding=(3, 5))
         style.configure("TCheckbutton", background=c["carte"],
                         foreground=c["texte"], padding=(3, 5))
+        style.configure("CardTitle.TCheckbutton", background=c["carte"],
+                        foreground=c["accent"], padding=(2, 0),
+                        font=("DejaVu Sans", 9, "bold"))
+        for nom in ("TRadiobutton", "TCheckbutton", "CardTitle.TCheckbutton"):
+            style.map(nom,
+                      background=[("disabled", c["carte"]),
+                                  ("active", c["carte"])],
+                      foreground=[("disabled", "#a3afc0")])
         style.configure("Vertical.TScrollbar", background="#e8eef8",
                         troughcolor=c["champ"], bordercolor=c["bordure"],
                         arrowsize=12)
@@ -1005,182 +1232,246 @@ class Application(ttk.Frame):
     def _construire_ui(self):
         contenu = self.contenu
         c = self.couleurs
-        contenu.configure(style="App.TFrame", padding=(18, 14))
-        contenu.columnconfigure(0, weight=1)
-        contenu.columnconfigure(1, weight=1)
-        contenu.rowconfigure(3, weight=1)
-        contenu.rowconfigure(6, weight=1)
+        contenu.configure(style="App.TFrame", padding=(16, 10))
+        contenu.columnconfigure(0, weight=1, uniform="col")
+        contenu.columnconfigure(1, weight=1, uniform="col")
+        contenu.rowconfigure(1, weight=1)
+        contenu.rowconfigure(4, weight=1)
 
-        # En-tête
+        def carte(titre, ligne, colonne, **opts):
+            f = ttk.LabelFrame(contenu, text=f"  {titre}  ",
+                               style="Card.TLabelframe", padding=10)
+            f.grid(row=ligne, column=colonne, sticky="nsew",
+                   padx=(0, 5) if colonne == 0 else (5, 0),
+                   pady=(0, 8), **opts)
+            return f
+
+        def spin(parent, var, mini, maxi, pas=1, largeur=7):
+            return ttk.Spinbox(parent, from_=mini, to=maxi, increment=pas,
+                               width=largeur, textvariable=var)
+
+        # En-tête : titre, sous-titre et version
         entete = ttk.Frame(contenu, style="App.TFrame")
-        entete.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 14))
-        ttk.Label(entete, text="Origines géographiques",
+        entete.grid(row=0, column=0, columnspan=2, sticky="ew",
+                    pady=(0, 8))
+        entete.columnconfigure(0, weight=1)
+        titres = ttk.Frame(entete, style="App.TFrame")
+        titres.grid(row=0, column=0, sticky="w")
+        ttk.Label(titres, text="Origines géographiques",
                   style="Title.TLabel").pack(anchor="w")
-        ttk.Label(entete,
-                  text="Explorez les lieux de naissance de vos ancêtres à partir d’un fichier GEDCOM.",
-                  style="Subtitle.TLabel").pack(anchor="w", pady=(3, 0))
+        ttk.Label(titres,
+                  text="Explorez les lieux de naissance de vos ancêtres "
+                       "à partir d’un fichier GEDCOM.",
+                  style="Subtitle.TLabel").pack(anchor="w")
+        ttk.Label(entete, text=f"version {VERSION}",
+                  style="Subtitle.TLabel").grid(row=0, column=1,
+                                                sticky="ne")
 
         # 1. Source et individu de départ
-        f = ttk.LabelFrame(contenu, text="  1  ·  Fichier source et individu de départ  ",
-                           style="Card.TLabelframe", padding=12)
-        f.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(0, 10))
-        f.columnconfigure(1, weight=1)
-        ttk.Label(f, text="Fichier GEDCOM").grid(row=0, column=0, sticky="w")
-        ttk.Entry(f, textvariable=self.v_gedcom).grid(
-            row=0, column=1, sticky="ew", padx=(10, 8))
-        ttk.Button(f, text="Parcourir…", command=self._choisir_gedcom).grid(
-            row=0, column=2)
+        f = carte("1  ·  Fichier source et individu de départ", 1, 0)
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(3, weight=1)
+        ttk.Label(f, text="Fichier GEDCOM").grid(row=0, column=0,
+                                                 columnspan=2, sticky="w")
+        ligne_fichier = ttk.Frame(f)
+        ligne_fichier.grid(row=1, column=0, sticky="ew", pady=(3, 8))
+        ligne_fichier.columnconfigure(0, weight=1)
+        champ_gedcom = ttk.Entry(ligne_fichier, textvariable=self.v_gedcom)
+        champ_gedcom.grid(row=0, column=0, sticky="ew", padx=(0, 8))
+        champ_gedcom.bind("<Return>", self._charger_depuis_champ)
+        champ_gedcom.bind("<<Paste>>", lambda e: self.after(
+            80, self._charger_depuis_champ))
+        ttk.Button(ligne_fichier, text="Parcourir…",
+                   command=self._choisir_gedcom).grid(row=0, column=1)
 
-        ttk.Label(f, text="Individu de départ (G1)").grid(
-            row=1, column=0, sticky="nw", pady=(12, 0))
+        ligne_filtre = ttk.Frame(f)
+        ligne_filtre.grid(row=2, column=0, sticky="ew", pady=(0, 4))
+        ligne_filtre.columnconfigure(1, weight=1)
+        ttk.Label(ligne_filtre, text="Individu de départ (G1)  ·  "
+                                     "filtre :").grid(row=0, column=0)
+        ttk.Entry(ligne_filtre, textvariable=self.v_recherche).grid(
+            row=0, column=1, sticky="ew", padx=(8, 0))
+
         zone = ttk.Frame(f)
-        zone.grid(row=1, column=1, columnspan=2, sticky="nsew",
-                  padx=(10, 0), pady=(10, 0))
+        zone.grid(row=3, column=0, sticky="nsew")
         zone.columnconfigure(0, weight=1)
-        zone.rowconfigure(1, weight=1)
-        recherche = ttk.Frame(zone)
-        recherche.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 6))
-        recherche.columnconfigure(0, weight=1)
-        ttk.Entry(recherche, textvariable=self.v_recherche).grid(
-            row=0, column=0, sticky="ew")
-        ttk.Label(recherche, text="Filtrer par nom ou identifiant",
-                  style="Muted.TLabel").grid(row=0, column=1, padx=(10, 0))
+        zone.rowconfigure(0, weight=1)
         self.liste = tk.Listbox(
-            zone, height=6, exportselection=False, activestyle="none",
+            zone, height=5, exportselection=False, activestyle="none",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground=c["bordure"], highlightcolor=c["accent"],
             background="#f8fafc", foreground=c["texte"],
             selectbackground="#dbeafe", selectforeground="#1e3a8a",
             font=("DejaVu Sans", 10))
-        sb = ttk.Scrollbar(zone, orient="vertical", command=self.liste.yview)
+        sb = ttk.Scrollbar(zone, orient="vertical",
+                           command=self.liste.yview)
         self.liste.configure(yscrollcommand=sb.set)
-        self.liste.grid(row=1, column=0, sticky="nsew")
-        sb.grid(row=1, column=1, sticky="ns")
-        self.lbl_info = ttk.Label(zone, text="Aucun fichier chargé.",
-                                  style="Muted.TLabel")
-        self.lbl_info.grid(row=2, column=0, columnspan=2, sticky="w", pady=(5, 0))
+        self.liste.grid(row=0, column=0, sticky="nsew")
+        sb.grid(row=0, column=1, sticky="ns")
+        self._lier_molette(self.liste)
+        self.liste.bind("<<ListboxSelect>>", self._maj_nom_image_auto)
+        indice_dnd = ("  ·  Glissez-déposez un fichier .ged dans cette "
+                      "fenêtre." if self.dnd else
+                      "  ·  (glisser-déposer indisponible)")
+        self.lbl_info = ttk.Label(
+            f, text="Aucun fichier chargé." + indice_dnd,
+            style="Muted.TLabel")
+        self.lbl_info.grid(row=4, column=0, sticky="w", pady=(4, 0))
 
         # 2. Paramètres généalogiques
-        g = ttk.LabelFrame(contenu, text="  2  ·  Ascendance et lieux  ",
-                           style="Card.TLabelframe", padding=12)
-        g.grid(row=2, column=0, sticky="nsew", padx=(0, 5), pady=(0, 10))
-        g.columnconfigure(1, weight=1)
-        ttk.Label(g, text="Nombre de générations (G1 incluse)").grid(
-            row=0, column=0, columnspan=2, sticky="w")
-        ttk.Spinbox(g, from_=2, to=30, width=7,
-                    textvariable=self.v_nb_gen).grid(
-            row=1, column=0, sticky="w", pady=(4, 9))
-        ttk.Label(g, text="Niveau du lieu à retenir").grid(
-            row=2, column=0, columnspan=2, sticky="w")
-        ttk.Spinbox(g, from_=1, to=10, width=7,
-                    textvariable=self.v_niveau).grid(
-            row=3, column=0, sticky="w", pady=(4, 7))
-        ttk.Radiobutton(g, text="Compter depuis la fin (pays = 1)",
-                        variable=self.v_sens, value="fin").grid(
-            row=4, column=0, columnspan=2, sticky="w")
+        g = carte("2  ·  Ascendance et lieux", 1, 1)
+        g.columnconfigure(0, weight=1)
+        g.rowconfigure(8, weight=1)
+
+        ligne = ttk.Frame(g)
+        ligne.grid(row=0, column=0, sticky="ew")
+        ligne.columnconfigure(0, weight=1, uniform="reglage")
+        ligne.columnconfigure(2, weight=1, uniform="reglage")
+        gauche = ttk.Frame(ligne)
+        gauche.grid(row=0, column=0, sticky="w")
+        ttk.Label(gauche, text="Nombre de générations (G1 incluse)").pack(
+            anchor="w")
+        spin(gauche, self.v_nb_gen, 2, 30).pack(anchor="w", pady=(3, 0))
+        ttk.Separator(ligne, orient="vertical").grid(
+            row=0, column=1, sticky="ns", padx=14)
+        droite = ttk.Frame(ligne)
+        droite.grid(row=0, column=2, sticky="w")
+        ttk.Label(droite, text="Niveau du lieu à retenir").pack(anchor="w")
+        spin(droite, self.v_niveau, 1, 10).pack(anchor="w", pady=(3, 0))
+
         ttk.Radiobutton(g, text="Compter depuis le début (commune = 1)",
                         variable=self.v_sens, value="debut").grid(
-            row=5, column=0, columnspan=2, sticky="w")
+            row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Radiobutton(g, text="Compter depuis la fin (pays = 1)",
+                        variable=self.v_sens, value="fin").grid(
+            row=2, column=0, sticky="w")
         ttk.Checkbutton(g, text="Utiliser le baptême si naissance absente",
                         variable=self.v_bapteme).grid(
-            row=6, column=0, columnspan=2, sticky="w", pady=(3, 0))
+            row=3, column=0, sticky="w")
         ttk.Checkbutton(g, text="Ajouter le pays (séparé par un tiret)",
                         variable=self.v_pays).grid(
-            row=7, column=0, columnspan=2, sticky="w")
+            row=4, column=0, sticky="w")
         self.chk_pays_premier = ttk.Checkbutton(
             g, text="Pays en premier (décoché : pays en dernier)",
             variable=self.v_pays_premier)
-        self.chk_pays_premier.grid(
-            row=8, column=0, columnspan=2, sticky="w", padx=(22, 0),
-            pady=(0, 7))
+        self.chk_pays_premier.grid(row=5, column=0, sticky="w",
+                                   padx=(22, 0))
         ttk.Label(g, text="APERÇU  ·  LIEU RETENU  ←  LIEU GEDCOM",
                   style="Muted.TLabel").grid(
-            row=9, column=0, columnspan=2, sticky="w", pady=(5, 5))
+            row=6, column=0, sticky="w", pady=(6, 3))
         self.apercu = tk.Text(
             g, height=6, width=42, wrap="word", state="disabled",
             background="#f8fafc", foreground=c["texte"],
-            relief="flat", borderwidth=0, padx=9, pady=8,
+            relief="flat", borderwidth=0, padx=9, pady=6,
             highlightthickness=1, highlightbackground=c["bordure"],
             font=("DejaVu Sans", 9))
-        self.apercu.grid(row=10, column=0, columnspan=2, sticky="nsew")
-        g.rowconfigure(10, weight=1)
+        self.apercu.grid(row=8, column=0, sticky="nsew")
+        self._lier_molette(self.apercu)
 
         # 3. Apparence du diagramme
-        a = ttk.LabelFrame(contenu, text="  3  ·  Apparence du diagramme  ",
-                           style="Card.TLabelframe", padding=12)
-        a.grid(row=2, column=1, sticky="nsew", padx=(5, 0), pady=(0, 10))
+        a = carte("3  ·  Apparence du diagramme", 2, 0)
         a.columnconfigure(1, weight=1)
-        ttk.Label(a, text="Titre du diagramme").grid(row=0, column=0, sticky="w")
+        a.columnconfigure(3, weight=1)
+        ttk.Label(a, text="Titre du diagramme").grid(row=0, column=0,
+                                                     sticky="w")
         ttk.Entry(a, textvariable=self.v_titre).grid(
-            row=0, column=1, sticky="ew", padx=(8, 0))
+            row=0, column=1, columnspan=3, sticky="ew", padx=(8, 0))
         champs = [
             ("Pixels par individu", self.v_px_unite, 10, 500, 5),
             ("Écart entre les cases (px)", self.v_pad, 0, 200, 2),
-            ("Atténuation (× par doublement)", self.v_facteur, 1.0, 2.0, 0.05),
+            ("Atténuation (× par doublement)", self.v_facteur,
+             1.0, 2.0, 0.05),
             ("Largeur d’une case (px)", self.v_larg_noeud, 4, 100, 2),
-            ("Distance entre générations (px)", self.v_esp_col, 80, 800, 10),
+            ("Distance entre générations (px)", self.v_esp_col,
+             80, 800, 10),
         ]
-        for i, (txt, var, mini, maxi, pas) in enumerate(champs, start=1):
-            ttk.Label(a, text=txt).grid(row=i, column=0, sticky="w", pady=(9, 0))
-            ttk.Spinbox(a, from_=mini, to=maxi, increment=pas, width=9,
-                        textvariable=var).grid(
-                row=i, column=1, sticky="w", padx=(8, 0), pady=(9, 0))
+        for i, (txt, var, mini, maxi, pas) in enumerate(champs):
+            r, col = 1 + i // 2, (i % 2) * 2
+            ttk.Label(a, text=txt).grid(
+                row=r, column=col, sticky="w", pady=(7, 0),
+                padx=(0, 0) if col == 0 else (16, 0))
+            spin(a, var, mini, maxi, pas, 6).grid(
+                row=r, column=col + 1, sticky="w", padx=(8, 0),
+                pady=(7, 0))
         ttk.Label(
-            a, foreground=c["secondaire"], wraplength=340, justify="left",
-            text="Atténuation : 2,0 = hauteur proportionnelle à l’effectif. "
-                 "1,25 = la hauteur augmente de 25 % quand l’effectif double.",
-            style="Muted.TLabel"
-        ).grid(row=6, column=0, columnspan=2, sticky="w", pady=(13, 0))
+            a, wraplength=520, justify="left", style="Muted.TLabel",
+            text="Atténuation : 2,0 = hauteur proportionnelle à "
+                 "l’effectif ; 1,25 = la hauteur augmente de 25 % quand "
+                 "l’effectif double."
+        ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(9, 0))
 
         # 4. Export
-        e = ttk.LabelFrame(contenu, text="  4  ·  Export des résultats  ",
-                           style="Card.TLabelframe", padding=12)
-        e.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(0, 10))
+        e = carte("4  ·  Export des résultats", 2, 1)
         e.columnconfigure(1, weight=1)
         ttk.Label(e, text="Fichier HTML").grid(row=0, column=0, sticky="w")
         ttk.Entry(e, textvariable=self.v_html).grid(
-            row=0, column=1, sticky="ew", padx=9)
-        ttk.Button(e, text="Choisir…", command=self._choisir_html).grid(row=0, column=2)
-        ttk.Checkbutton(e, text="Exporter également en JPEG",
-                        variable=self.v_jpeg_on).grid(
-            row=1, column=0, sticky="w", pady=(9, 0))
-        ttk.Entry(e, textvariable=self.v_jpeg).grid(
-            row=1, column=1, sticky="ew", padx=9, pady=(9, 0))
-        ttk.Button(e, text="Choisir…", command=self._choisir_jpeg).grid(
-            row=1, column=2, pady=(9, 0))
-        ttk.Label(e, text="Résolution JPEG (×)").grid(
-            row=2, column=0, sticky="w", pady=(9, 0))
-        ttk.Spinbox(e, from_=1, to=6, increment=0.5, width=7,
-                    textvariable=self.v_resolution).grid(
-            row=2, column=1, sticky="w", padx=9, pady=(9, 0))
+            row=0, column=1, sticky="ew", padx=8)
+        ttk.Button(e, text="Choisir…", command=self._choisir_html).grid(
+            row=0, column=2)
+
+        # Section image : activée / désactivée par sa case à cocher
+        case_image = ttk.Checkbutton(
+            e, text="Créer une image", variable=self.v_img_on,
+            style="CardTitle.TCheckbutton")
+        img = ttk.LabelFrame(e, labelwidget=case_image,
+                             style="Card.TLabelframe", padding=(10, 6))
+        img.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(8, 0))
+        img.columnconfigure(1, weight=1)
+        ligne_fmt = ttk.Frame(img)
+        ligne_fmt.grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(ligne_fmt, text="Format").pack(side="left")
+        r_jpg = ttk.Radiobutton(ligne_fmt, text="JPG",
+                                variable=self.v_format, value="jpg")
+        r_jpg.pack(side="left", padx=(8, 0))
+        r_png = ttk.Radiobutton(ligne_fmt, text="PNG",
+                                variable=self.v_format, value="png")
+        r_png.pack(side="left", padx=(4, 22))
+        ttk.Label(ligne_fmt, text="Résolution (×)").pack(side="left")
+        sp_res = spin(ligne_fmt, self.v_resolution, 1, 6, 0.5, 5)
+        sp_res.pack(side="left", padx=(8, 0))
+        ttk.Label(img, text="Nom").grid(row=1, column=0, sticky="w",
+                                        pady=(6, 0))
+        champ_nom = ttk.Entry(img, textvariable=self.v_nom_image)
+        champ_nom.grid(row=1, column=1, sticky="ew", padx=8, pady=(6, 0))
+        btn_dossier = ttk.Button(img, text="Dossier…",
+                                 command=self._choisir_dossier_image)
+        btn_dossier.grid(row=1, column=2, pady=(6, 0))
+        self.lbl_fichier_image = ttk.Label(
+            img, style="Muted.TLabel", wraplength=470, justify="left")
+        self.lbl_fichier_image.grid(row=2, column=0, columnspan=3,
+                                    sticky="w", pady=(4, 0))
+        self._widgets_image = [r_jpg, r_png, sp_res, champ_nom, btn_dossier]
+
         opts = ttk.Frame(e)
-        opts.grid(row=3, column=0, columnspan=3, sticky="w", pady=(7, 0))
-        ttk.Checkbutton(opts, text="Exporter les liens en CSV (Excel)",
-                        variable=self.v_csv_on).pack(side="left", padx=(0, 18))
+        opts.grid(row=2, column=0, columnspan=3, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(opts, text="Liens en CSV (Excel)",
+                        variable=self.v_csv_on).pack(side="left",
+                                                     padx=(0, 18))
         ttk.Checkbutton(opts, text="Ouvrir le HTML à la fin",
                         variable=self.v_ouvrir).pack(side="left")
 
         # Lancement et journal
         self.btn = ttk.Button(contenu, text="GÉNÉRER LE DIAGRAMME",
                               style="Primary.TButton", command=self._lancer)
-        self.btn.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(1, 10))
+        self.btn.grid(row=3, column=0, columnspan=2, sticky="ew",
+                      pady=(0, 8))
         journal_card = ttk.LabelFrame(
             contenu, text="  Journal  ·  Suivi de la génération  ",
-            style="Card.TLabelframe", padding=9)
-        journal_card.grid(row=5, column=0, columnspan=2, sticky="nsew")
+            style="Card.TLabelframe", padding=8)
+        journal_card.grid(row=4, column=0, columnspan=2, sticky="nsew")
         journal_card.columnconfigure(0, weight=1)
         journal_card.rowconfigure(0, weight=1)
         self.journal = tk.Text(
-            journal_card, height=5, state="disabled", wrap="word",
+            journal_card, height=4, state="disabled", wrap="word",
             background="#f8fafc", foreground="#475569", relief="flat",
-            borderwidth=0, padx=8, pady=7, font=("DejaVu Sans Mono", 9),
+            borderwidth=0, padx=8, pady=5, font=("DejaVu Sans Mono", 9),
             highlightthickness=1, highlightbackground=c["bordure"])
         self.journal.grid(row=0, column=0, sticky="nsew")
         journal_sb = ttk.Scrollbar(journal_card, orient="vertical",
                                    command=self.journal.yview)
         journal_sb.grid(row=0, column=1, sticky="ns")
         self.journal.configure(yscrollcommand=journal_sb.set)
-        contenu.rowconfigure(5, weight=1)
+        self._lier_molette(self.journal)
 
     # ---------- utilitaires ----------
     def log(self, message):
@@ -1213,10 +1504,14 @@ class Application(ttk.Frame):
                        ("Tous les fichiers", "*.*")])
         if not chemin:
             return
+        self._ouvrir_gedcom(chemin)
+
+    def _ouvrir_gedcom(self, chemin):
+        """Choisi par « Parcourir » ou déposé dans la fenêtre."""
         self.v_gedcom.set(chemin)
         base = os.path.splitext(chemin)[0]
         self.v_html.set(base + "_sankey.html")
-        self.v_jpeg.set(base + "_sankey.jpg")
+        self.v_dossier_image.set(os.path.dirname(chemin))
         self._charger(chemin)
 
     def _charger(self, chemin):
@@ -1240,9 +1535,10 @@ class Application(ttk.Frame):
         self.lbl_info.configure(
             text=f"{len(self.individus)} individus, "
                  f"{len(self.familles)} familles.")
+        self.log(f"Fichier chargé : {os.path.basename(chemin)}")
         self.v_recherche.set("")
         self._filtrer(selection=self.premier)
-        self._maj_apercu_lieux(ajuster=True)
+        self._maj_apercu_lieux()
 
     def _libelle(self, xref):
         i = self.individus[xref]
@@ -1269,6 +1565,7 @@ class Application(ttk.Frame):
                 i = 0
             self.liste.selection_set(i)
             self.liste.see(i)
+        self._maj_nom_image_auto()
 
     def _xref_selectionne(self):
         sel = self.liste.curselection()
@@ -1276,11 +1573,8 @@ class Application(ttk.Frame):
             return None
         return self.liste_affichee[sel[0]]
 
-    def _maj_apercu_lieux(self, ajuster=False):
-        """Montre comment quelques lieux du fichier seront découpés.
-
-        La fenêtre n'est redimensionnée qu'au chargement d'un fichier
-        (ajuster=True), pas à chaque changement de réglage."""
+    def _maj_apercu_lieux(self):
+        """Montre comment quelques lieux du fichier seront découpés."""
         if not self.individus:
             return
         try:
@@ -1305,25 +1599,6 @@ class Application(ttk.Frame):
         self.apercu.insert("end", contenu)
         self.apercu.configure(state="disabled")
 
-        # Ajuste automatiquement la taille de la fenêtre pour rendre
-        # l'aperçu aussi lisible que possible, sans dépasser l'écran.
-        if ajuster:
-            self._ajuster_fenetre_apercu(lignes or ["(aucun lieu)"])
-
-    def _ajuster_fenetre_apercu(self, lignes):
-        """Ajuste la largeur si possible ; la hauteur reste défilante."""
-        self.update_idletasks()
-        ecran_l = self.winfo_screenwidth()
-        ecran_h = self.winfo_screenheight()
-        police = tkfont.Font(font=self.apercu.cget("font"))
-        largeur_texte = max((police.measure(ligne) for ligne in lignes), default=0)
-        largeur_voulue = max(1040, largeur_texte * 2 + 820)
-        largeur = min(largeur_voulue, max(860, ecran_l - 80))
-        hauteur = min(900, max(650, ecran_h - 100))
-        self.master.minsize(min(860, largeur), min(600, hauteur))
-        self.master.geometry(f"{largeur}x{hauteur}")
-        self.update_idletasks()
-
     # ---------- choix de fichiers de sortie ----------
     def _choisir_html(self):
         c = filedialog.asksaveasfilename(
@@ -1332,14 +1607,6 @@ class Application(ttk.Frame):
             filetypes=[("HTML", "*.html")])
         if c:
             self.v_html.set(c)
-
-    def _choisir_jpeg(self):
-        c = filedialog.asksaveasfilename(
-            defaultextension=".jpg", initialfile=os.path.basename(
-                self.v_jpeg.get() or "diagramme_sankey.jpg"),
-            filetypes=[("JPEG", "*.jpg *.jpeg")])
-        if c:
-            self.v_jpeg.set(c)
 
     # ---------- lancement ----------
     def _lire_parametres(self):
@@ -1368,9 +1635,10 @@ class Application(ttk.Frame):
                 largeur_noeud=float(self.v_larg_noeud.get()),
                 espace_colonnes=float(self.v_esp_col.get()),
                 html=self.v_html.get().strip(),
-                jpeg=(self.v_jpeg.get().strip()
-                      if self.v_jpeg_on.get() else None),
-                resolution_jpeg=float(self.v_resolution.get()),
+                image=None,
+                format_image=("png" if self.v_format.get() == "png"
+                              else "jpeg"),
+                resolution_image=float(self.v_resolution.get()),
                 csv=(os.path.splitext(self.v_html.get().strip())[0]
                      + "_liens.csv") if self.v_csv_on.get() else None,
             )
@@ -1382,8 +1650,14 @@ class Application(ttk.Frame):
         if p["facteur_doublement"] <= 0:
             raise ValueError("L'atténuation doit être strictement "
                              "positive.")
-        if self.v_jpeg_on.get() and not p["jpeg"]:
-            raise ValueError("Indiquez un fichier JPEG.")
+        if self.v_img_on.get():
+            dossier = (self.v_dossier_image.get().strip()
+                       or os.path.dirname(p["html"]) or ".")
+            if not os.path.isdir(dossier):
+                raise ValueError(
+                    f"Le dossier de l'image n'existe pas :\n{dossier}")
+            p["image"] = chemin_image(dossier, self.v_nom_image.get(),
+                                      self.v_format.get())
         return p
 
     def _lancer(self):
@@ -1432,12 +1706,40 @@ def verifier_dependances():
     return manquants
 
 
+def creer_fenetre(racine, dnd=False, erreur_dnd=None):
+    """Construit l'application et dimensionne la fenêtre sur son
+    contenu (tout est visible à l'ouverture)."""
+    app = Application(racine, dnd=dnd, erreur_dnd=erreur_dnd)
+    app.ajuster_taille_fenetre()
+    return app
+
+
+def creer_racine():
+    """Fenêtre principale, avec glisser-déposer si tkinterdnd2 est
+    utilisable. Retourne (racine, dnd_disponible, message_erreur)."""
+    try:
+        from tkinterdnd2 import TkinterDnD
+    except ImportError:
+        return tk.Tk(), False, ("module tkinterdnd2 non installé "
+                                "(pip install tkinterdnd2)")
+    try:
+        return TkinterDnD.Tk(), True, None
+    except Exception as e:      # bibliothèque tkdnd absente / incompatible
+        try:                    # ferme la fenêtre créée à moitié
+            if tk._default_root is not None:
+                tk._default_root.destroy()
+        except Exception:
+            pass
+        return tk.Tk(), False, (f"{type(e).__name__}: {e} "
+                                "(essayez pip install -U tkinterdnd2)")
+
+
 def main():
-    racine = tk.Tk()
-    largeur_ecran = racine.winfo_screenwidth()
-    hauteur_ecran = racine.winfo_screenheight()
-    racine.geometry(f"{min(1180, largeur_ecran - 80)}x{min(900, hauteur_ecran - 100)}")
-    racine.minsize(860, 600)
+    if any(a in ("--version", "-V") for a in sys.argv[1:]):
+        print(f"Origines géographiques · Analyse GEDCOM — version {VERSION}")
+        return
+
+    racine, dnd, erreur_dnd = creer_racine()
 
     manquants = verifier_dependances()
     if manquants:
@@ -1445,11 +1747,12 @@ def main():
             "Modules manquants",
             "Modules Python à installer :\n\n"
             f"    pip install {' '.join(manquants)}\n\n"
-            "(et, pour l'export JPEG : pip install pillow)")
+            "(et, pour l'export JPG / PNG : pip install pillow ;\n"
+            "pour le glisser-déposer : pip install tkinterdnd2)")
         racine.destroy()
         sys.exit(1)
 
-    Application(racine)
+    creer_fenetre(racine, dnd, erreur_dnd)
     racine.mainloop()
 
 
