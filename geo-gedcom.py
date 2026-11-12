@@ -32,6 +32,7 @@ from collections import Counter, defaultdict
 
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
+from tkinter import font as tkfont
 
 
 # ============================================================
@@ -39,9 +40,51 @@ from tkinter import ttk, filedialog, messagebox
 # ============================================================
 
 # Numéro de version : à changer ici à chaque publication. Il s'affiche
-# en haut à droite de la fenêtre, dans son titre, dans le journal, et avec
+# en haut à droite de la fenêtre, dans son titre, et avec
 #     python geo-gedcom.py --version
-VERSION = "1.02"
+VERSION = "1.03"
+
+
+# ============================================================
+# 0 bis. THÈMES DE L'INTERFACE
+# ============================================================
+
+THEMES = {
+    "clair": {
+        "nom": "Clair",
+        "fond": "#eef2f7", "carte": "#ffffff", "texte": "#172033",
+        "secondaire": "#64748b", "accent": "#2563eb",
+        "accent_survol": "#1d4ed8", "texte_accent": "#ffffff",
+        "bordure": "#dbe3ee", "bordure_sub": "#e3e9f2",
+        "champ": "#f8fafc", "bouton": "#e8eef8",
+        "bouton_survol": "#dbe7f7", "sel_fond": "#dbeafe",
+        "sel_texte": "#1e3a8a", "inactif": "#a3afc0",
+        "principal_inactif": "#94a3b8",
+    },
+    "intermediaire": {
+        "nom": "Intermédiaire",
+        "fond": "#d6c8b4", "carte": "#ebe2d3", "texte": "#33271c",
+        "secondaire": "#6e5b47", "accent": "#b4532a",
+        "accent_survol": "#933f1c", "texte_accent": "#ffffff",
+        "bordure": "#b9a78e", "bordure_sub": "#c9b9a1",
+        "champ": "#f6f0e6", "bouton": "#ddd0bb",
+        "bouton_survol": "#cdbda4", "sel_fond": "#f0c9a8",
+        "sel_texte": "#5a2410", "inactif": "#a09079",
+        "principal_inactif": "#a8987f",
+    },
+    "sombre": {
+        "nom": "Sombre",
+        "fond": "#0e131b", "carte": "#19202b", "texte": "#e5e9f0",
+        "secondaire": "#97a3b6", "accent": "#6ea8ff",
+        "accent_survol": "#8dbbff", "texte_accent": "#0a1120",
+        "bordure": "#2f3a4b", "bordure_sub": "#2a3443",
+        "champ": "#111722", "bouton": "#263042",
+        "bouton_survol": "#33415a", "sel_fond": "#27487d",
+        "sel_texte": "#dce9ff", "inactif": "#5a667a",
+        "principal_inactif": "#3a4658",
+    },
+}
+THEME_DEFAUT = "clair"
 
 
 # ============================================================
@@ -317,18 +360,41 @@ def indice_pays(format_lieu):
     return None
 
 
-def extraire_pays(parts, index_pays):
-    """Pays d'un lieu déjà découpé ('' si non renseigné).
+NB_NIVEAUX_DEFAUT = 5      # Commune, Code postal, Département, Région, Pays
+
+
+def nombre_niveaux(index_pays):
+    """Nombre de niveaux de lieu utilisables : de la commune jusqu'au
+    pays inclus (5 pour « Town, Area code, County, Region, Country »)."""
+    return index_pays + 1 if index_pays is not None else NB_NIVEAUX_DEFAUT
+
+
+def indice_niveau(nb_parts, niveau, depuis_la_fin):
+    """Position (à partir de 0) du niveau demandé dans un lieu découpé."""
+    niveau = max(1, niveau)
+    if depuis_la_fin:
+        return max(nb_parts - niveau, 0)
+    return min(niveau - 1, nb_parts - 1)
+
+
+def position_pays(parts, index_pays):
+    """Position du pays dans un lieu découpé, ou None.
 
     On utilise la position annoncée par l'en-tête du GEDCOM ; à défaut
     (ou si le lieu est trop court), on prend le dernier élément rempli.
     """
     if index_pays is not None and index_pays < len(parts):
-        return parts[index_pays]
-    for p in reversed(parts):
-        if p:
-            return p
-    return ""
+        return index_pays
+    for k in range(len(parts) - 1, -1, -1):
+        if parts[k]:
+            return k
+    return None
+
+
+def extraire_pays(parts, index_pays):
+    """Pays d'un lieu déjà découpé ('' si non renseigné)."""
+    k = position_pays(parts, index_pays)
+    return parts[k] if k is not None else ""
 
 
 def extraire_lieu(brut, niveau, depuis_la_fin, ajouter_pays=False,
@@ -341,6 +407,11 @@ def extraire_lieu(brut, niveau, depuis_la_fin, ajouter_pays=False,
       manquant.
     Si le composant demandé est vide, le lieu est "Lieu inconnu".
 
+    Seuls les niveaux « Commune … Pays » comptent (5 par défaut) : tout ce
+    qui suit le pays (subdivision, rue, virgule finale) est ignoré. Ainsi
+    « depuis la fin », le pays est toujours le niveau 1 et la commune le
+    niveau 5 ; « depuis le début », la commune est 1 et le pays 5.
+
     niveau : 1 = premier composant (en partant de la fin ou du début).
     Si le lieu a moins de composants, on prend le plus proche.
 
@@ -351,11 +422,8 @@ def extraire_lieu(brut, niveau, depuis_la_fin, ajouter_pays=False,
     if not brut or not brut.strip():
         return LIEU_INCONNU
     parts = [p.strip() for p in brut.split(",")]
-    niveau = max(1, niveau)
-    if depuis_la_fin:
-        i = max(len(parts) - niveau, 0)
-    else:
-        i = min(niveau - 1, len(parts) - 1)
+    parts = parts[:nombre_niveaux(index_pays)]
+    i = indice_niveau(len(parts), niveau, depuis_la_fin)
     lieu = parts[i] or LIEU_INCONNU
 
     if ajouter_pays:
@@ -894,7 +962,8 @@ def generer(p, log):
 
     fig = construire_figure(liens, p)
 
-    fig.write_html(p["html"], include_plotlyjs=True, full_html=True)
+    fig.write_html(p["html"], include_plotlyjs=True, full_html=True,
+                   config={"displayModeBar": False, "displaylogo": False})
     log(f"Diagramme créé : {p['html']}")
 
     if p.get("image"):
@@ -916,8 +985,8 @@ class Application(ttk.Frame):
         self.erreur_dnd = erreur_dnd
         master.title(f"Origines géographiques · Analyse GEDCOM  —  "
                      f"version {VERSION}")
-        master.configure(bg="#eef2f7")
         master.option_add("*Font", ("DejaVu Sans", 10))
+        self.v_theme = tk.StringVar(value=THEME_DEFAUT)
         self._configurer_style()
         self.configure(style="App.TFrame")
         self.pack(fill="both", expand=True)
@@ -925,7 +994,7 @@ class Application(ttk.Frame):
         # Zone de contenu défilante : tous les réglages restent accessibles,
         # même lorsque la hauteur de l'écran est inférieure à celle de l'UI.
         self.canvas = tk.Canvas(self, highlightthickness=0, bd=0,
-                                background="#eef2f7")
+                                background=self.couleurs["fond"])
         self.scrollbar = ttk.Scrollbar(self, orient="vertical",
                                        command=self.canvas.yview)
         self.canvas.configure(yscrollcommand=self._maj_barre)
@@ -946,13 +1015,14 @@ class Application(ttk.Frame):
         self.familles = {}
         self.liste_affichee = []   # xref des individus visibles
         self.file_logs = queue.Queue()
+        self._messages = []        # messages de la génération en cours
 
         # Variables
         self.v_gedcom = tk.StringVar()
         self.v_recherche = tk.StringVar()
         self.v_nb_gen = tk.IntVar(value=8)
         self.v_niveau = tk.IntVar(value=3)
-        self.v_sens = tk.StringVar(value="fin")
+        self.v_sens = tk.StringVar(value="debut")
         self.v_bapteme = tk.BooleanVar(value=True)
         self.v_pays = tk.BooleanVar(value=False)
         self.v_pays_premier = tk.BooleanVar(value=False)
@@ -990,7 +1060,6 @@ class Application(ttk.Frame):
         if self.dnd:
             self._activer_glisser_deposer()
         self.after(150, self._lire_logs)
-        self.log(f"Origines géographiques · version {VERSION}")
         if self.erreur_dnd:
             self.log("Glisser-déposer indisponible : " + self.erreur_dnd)
         elif self.dnd and sys.platform.startswith("linux") and (
@@ -1035,6 +1104,17 @@ class Application(ttk.Frame):
             initialdir=self.v_dossier_image.get() or None)
         if d:
             self.v_dossier_image.set(d)
+
+    def _maj_niveaux_lieu(self, nb):
+        """Niveaux disponibles : 1 à nb (commune = 1 ... pays = nb)."""
+        self.spin_niveau.configure(to=nb)
+        try:
+            if int(self.v_niveau.get()) > nb:
+                self.v_niveau.set(nb)
+        except (tk.TclError, ValueError):
+            self.v_niveau.set(min(3, nb))
+        self.radio_fin.configure(
+            text=f"Compter depuis la fin (commune = {nb})")
 
     def _maj_etat_pays(self):
         """Grise « pays en premier » tant que « ajouter le pays » n'est
@@ -1149,7 +1229,7 @@ class Application(ttk.Frame):
             self._ouvrir_gedcom_verifie(chemin)
 
     # ---------- taille de la fenêtre ----------
-    def ajuster_taille_fenetre(self):
+    def ajuster_taille_fenetre(self, seulement_agrandir=False):
         """Dimensionne la fenêtre sur son contenu pour que tout soit
         visible à l'ouverture (limitée à la taille de l'écran ; au-delà,
         le défilement reste disponible)."""
@@ -1163,44 +1243,63 @@ class Application(ttk.Frame):
         haut = min(voulu_h, ecran_h - 90)
         x = max((ecran_l - larg) // 2, 0)
         y = max((ecran_h - haut) // 2 - 30, 0)
+        if seulement_agrandir:
+            # ne touche pas à la fenêtre si elle est déjà assez grande
+            if (self.master.winfo_width() >= larg
+                    and self.master.winfo_height() >= haut):
+                return
+            larg = max(larg, self.master.winfo_width())
+            haut = max(haut, self.master.winfo_height())
+            x, y = self.master.winfo_x(), self.master.winfo_y()
+            x = max(min(x, ecran_l - larg), 0)
         self.master.geometry(f"{larg}x{haut}+{x}+{y}")
         self.master.minsize(min(larg, 900), min(haut, 520))
 
     # ---------- style et construction ----------
     def _configurer_style(self):
-        """Thème clair moderne, sans dépendance externe."""
-        style = ttk.Style(self.master)
+        """Prépare ttk (thème « clam ») puis applique le thème choisi."""
+        self.style = ttk.Style(self.master)
         try:
-            style.theme_use("clam")
+            self.style.theme_use("clam")
         except tk.TclError:
             pass
+        self.couleurs = THEMES[THEME_DEFAUT]
+        self._appliquer_theme(THEME_DEFAUT)
 
-        self.couleurs = {
-            "fond": "#eef2f7",
-            "carte": "#ffffff",
-            "texte": "#172033",
-            "secondaire": "#64748b",
-            "accent": "#2563eb",
-            "accent_survol": "#1d4ed8",
-            "bordure": "#dbe3ee",
-            "champ": "#f8fafc",
-        }
-        c = self.couleurs
+    def _appliquer_theme(self, cle):
+        """Applique un thème : styles ttk + widgets Tk classiques."""
+        if cle not in THEMES:
+            cle = THEME_DEFAUT
+        self.couleurs = c = THEMES[cle]
+        style = self.style
+        self.master.configure(bg=c["fond"])
+
+        style.configure(".", background=c["carte"], foreground=c["texte"],
+                        fieldbackground=c["champ"],
+                        bordercolor=c["bordure"],
+                        lightcolor=c["carte"], darkcolor=c["carte"],
+                        troughcolor=c["champ"], focuscolor=c["carte"],
+                        insertcolor=c["texte"], arrowcolor=c["texte"])
         style.configure("App.TFrame", background=c["fond"])
         style.configure("TFrame", background=c["carte"])
         style.configure("TSeparator", background=c["bordure"])
         style.configure("Card.TLabelframe", background=c["carte"],
-                        bordercolor=c["bordure"], relief="solid", borderwidth=1)
+                        bordercolor=c["bordure"], relief="solid",
+                        borderwidth=1)
         style.configure("Sub.TLabelframe", background=c["carte"],
-                        bordercolor="#e3e9f2", relief="solid",
+                        bordercolor=c["bordure_sub"], relief="solid",
                         borderwidth=1)
         style.configure("Sub.TLabelframe.Label", background=c["carte"],
                         foreground=c["secondaire"],
                         font=("DejaVu Sans", 9, "bold"))
         style.configure("Card.TLabelframe.Label", background=c["carte"],
-                        foreground=c["accent"], font=("DejaVu Sans", 10, "bold"))
-        style.configure("TLabel", background=c["carte"], foreground=c["texte"])
+                        foreground=c["accent"],
+                        font=("DejaVu Sans", 10, "bold"))
+        style.configure("TLabel", background=c["carte"],
+                        foreground=c["texte"])
         style.configure("Muted.TLabel", background=c["carte"],
+                        foreground=c["secondaire"], font=("DejaVu Sans", 9))
+        style.configure("Status.TLabel", background=c["fond"],
                         foreground=c["secondaire"], font=("DejaVu Sans", 9))
         style.configure("Title.TLabel", background=c["fond"],
                         foreground=c["texte"], font=("DejaVu Sans", 19, "bold"))
@@ -1208,45 +1307,81 @@ class Application(ttk.Frame):
                         foreground=c["secondaire"], font=("DejaVu Sans", 10))
         style.configure("TEntry", fieldbackground=c["champ"],
                         foreground=c["texte"], bordercolor=c["bordure"],
-                        padding=(8, 7))
+                        insertcolor=c["texte"], padding=(8, 7))
         style.configure("TSpinbox", fieldbackground=c["champ"],
                         foreground=c["texte"], bordercolor=c["bordure"],
-                        padding=(6, 5), arrowsize=12)
-        style.configure("TButton", background="#e8eef8", foreground=c["texte"],
-                        bordercolor=c["bordure"], padding=(12, 7),
-                        font=("DejaVu Sans", 9, "bold"))
-        style.map("TButton", background=[("active", "#dbe7f7")])
+                        background=c["bouton"], arrowcolor=c["texte"],
+                        insertcolor=c["texte"], padding=(6, 5), arrowsize=12)
+        style.map("TEntry", fieldbackground=[("disabled", c["carte"])],
+                  foreground=[("disabled", c["inactif"])])
+        style.map("TSpinbox", fieldbackground=[("disabled", c["carte"])],
+                  foreground=[("disabled", c["inactif"])])
+        style.configure("TButton", background=c["bouton"],
+                        foreground=c["texte"], bordercolor=c["bordure"],
+                        padding=(12, 7), font=("DejaVu Sans", 9, "bold"))
+        style.map("TButton",
+                  background=[("disabled", c["carte"]),
+                              ("active", c["bouton_survol"])],
+                  foreground=[("disabled", c["inactif"])])
         style.configure("Primary.TButton", background=c["accent"],
-                        foreground="#ffffff", bordercolor=c["accent"],
-                        padding=(14, 11), font=("DejaVu Sans", 10, "bold"))
+                        foreground=c["texte_accent"],
+                        bordercolor=c["accent"], padding=(14, 11),
+                        font=("DejaVu Sans", 10, "bold"))
         style.map("Primary.TButton",
                   background=[("active", c["accent_survol"]),
-                              ("disabled", "#94a3b8")],
-                  foreground=[("disabled", "#f8fafc")])
-        style.configure("TRadiobutton", background=c["carte"],
-                        foreground=c["texte"], padding=(3, 5))
-        style.configure("TCheckbutton", background=c["carte"],
-                        foreground=c["texte"], padding=(3, 5))
-        style.configure("CardTitle.TCheckbutton", background=c["carte"],
-                        foreground=c["accent"], padding=(2, 0),
-                        font=("DejaVu Sans", 9, "bold"))
-        for nom in ("TRadiobutton", "TCheckbutton", "CardTitle.TCheckbutton"):
+                              ("disabled", c["principal_inactif"])],
+                  foreground=[("disabled", c["carte"])])
+        for nom, fond in (("TRadiobutton", c["carte"]),
+                          ("TCheckbutton", c["carte"]),
+                          ("CardTitle.TCheckbutton", c["carte"]),
+                          ("Theme.TRadiobutton", c["fond"])):
+            style.configure(nom, background=fond, foreground=c["texte"],
+                            indicatorbackground=c["champ"],
+                            indicatorforeground=c["accent"],
+                            upperbordercolor=c["secondaire"],
+                            lowerbordercolor=c["secondaire"],
+                            padding=(3, 5))
             style.map(nom,
-                      background=[("disabled", c["carte"]),
-                                  ("active", c["carte"])],
-                      foreground=[("disabled", "#a3afc0")])
-        style.configure("Vertical.TScrollbar", background="#e8eef8",
+                      background=[("disabled", fond), ("active", fond)],
+                      foreground=[("disabled", c["inactif"])],
+                      indicatorbackground=[("disabled", c["carte"]),
+                                           ("pressed", c["champ"])],
+                      indicatorforeground=[("disabled", c["inactif"])])
+        style.configure("CardTitle.TCheckbutton", foreground=c["accent"],
+                        padding=(2, 0), font=("DejaVu Sans", 9, "bold"))
+        style.configure("Vertical.TScrollbar", background=c["bouton"],
                         troughcolor=c["champ"], bordercolor=c["bordure"],
-                        arrowsize=12)
+                        arrowcolor=c["texte"], arrowsize=12)
+        style.map("Vertical.TScrollbar",
+                  background=[("active", c["bouton_survol"])])
+
+        # Widgets Tk classiques (créés plus tard ou déjà présents)
+        if hasattr(self, "canvas"):
+            self.canvas.configure(background=c["fond"])
+        if hasattr(self, "liste"):
+            self.liste.configure(
+                background=c["champ"], foreground=c["texte"],
+                highlightbackground=c["bordure"],
+                highlightcolor=c["accent"],
+                selectbackground=c["sel_fond"],
+                selectforeground=c["sel_texte"])
+        if hasattr(self, "apercu"):
+            self.apercu.configure(
+                background=c["champ"], foreground=c["texte"],
+                highlightbackground=c["bordure"])
+            self.apercu.tag_configure("choisi", background=c["sel_fond"],
+                                      foreground=c["sel_texte"])
+
+    def _changer_theme(self):
+        self._appliquer_theme(self.v_theme.get())
 
     def _construire_ui(self):
         contenu = self.contenu
         c = self.couleurs
         contenu.configure(style="App.TFrame", padding=(16, 10))
-        contenu.columnconfigure(0, weight=1, uniform="col")
-        contenu.columnconfigure(1, weight=1, uniform="col")
+        contenu.columnconfigure(0, weight=1)
+        contenu.columnconfigure(1, weight=1)
         contenu.rowconfigure(1, weight=1)
-        contenu.rowconfigure(4, weight=1)
 
         def carte(titre, ligne, colonne, **opts):
             f = ttk.LabelFrame(contenu, text=f"  {titre}  ",
@@ -1273,9 +1408,20 @@ class Application(ttk.Frame):
                   text="Explorez les lieux de naissance de vos ancêtres "
                        "à partir d’un fichier GEDCOM.",
                   style="Subtitle.TLabel").pack(anchor="w")
-        ttk.Label(entete, text=f"version {VERSION}",
-                  style="Subtitle.TLabel").grid(row=0, column=1,
-                                                sticky="ne")
+        droite = ttk.Frame(entete, style="App.TFrame")
+        droite.grid(row=0, column=1, sticky="ne")
+        ttk.Label(droite, text=f"version {VERSION}",
+                  style="Subtitle.TLabel").grid(row=0, column=0,
+                                                columnspan=4, sticky="e")
+        ttk.Label(droite, text="Thème :",
+                  style="Subtitle.TLabel").grid(row=1, column=0,
+                                                padx=(0, 4))
+        for k, cle in enumerate(THEMES):
+            ttk.Radiobutton(droite, text=THEMES[cle]["nom"],
+                            value=cle, variable=self.v_theme,
+                            style="Theme.TRadiobutton",
+                            command=self._changer_theme
+                            ).grid(row=1, column=k + 1, padx=2)
 
         # 1. Source et individu de départ
         f = carte("1  ·  Fichier source et individu de départ", 1, 0)
@@ -1310,8 +1456,8 @@ class Application(ttk.Frame):
             zone, height=5, exportselection=False, activestyle="none",
             relief="flat", borderwidth=0, highlightthickness=1,
             highlightbackground=c["bordure"], highlightcolor=c["accent"],
-            background="#f8fafc", foreground=c["texte"],
-            selectbackground="#dbeafe", selectforeground="#1e3a8a",
+            background=c["champ"], foreground=c["texte"],
+            selectbackground=c["sel_fond"], selectforeground=c["sel_texte"],
             font=("DejaVu Sans", 10))
         sb = ttk.Scrollbar(zone, orient="vertical",
                            command=self.liste.yview)
@@ -1366,12 +1512,15 @@ class Application(ttk.Frame):
         # Lieu retenu
         lieu = sous("Lieu retenu", 0, 1, rowspan=2)
         ttk.Label(lieu, text="Niveau du lieu à retenir").pack(anchor="w")
-        spin(lieu, self.v_niveau, 1, 10).pack(anchor="w", pady=(3, 6))
+        self.spin_niveau = spin(lieu, self.v_niveau, 1, NB_NIVEAUX_DEFAUT)
+        self.spin_niveau.pack(anchor="w", pady=(3, 6))
         ttk.Radiobutton(lieu, text="Compter depuis le début (commune = 1)",
                         variable=self.v_sens, value="debut").pack(
             anchor="w")
-        ttk.Radiobutton(lieu, text="Compter depuis la fin (pays = 1)",
-                        variable=self.v_sens, value="fin").pack(anchor="w")
+        self.radio_fin = ttk.Radiobutton(
+            lieu, variable=self.v_sens, value="fin")
+        self.radio_fin.pack(anchor="w")
+        self._maj_niveaux_lieu(NB_NIVEAUX_DEFAUT)
         ttk.Separator(lieu, orient="horizontal").pack(fill="x",
                                                       pady=(6, 4))
         ttk.Checkbutton(lieu, text="Utiliser le baptême si naissance "
@@ -1385,11 +1534,13 @@ class Application(ttk.Frame):
         ap.columnconfigure(0, weight=1)
         ap.rowconfigure(0, weight=1)
         self.apercu = tk.Text(
-            ap, height=6, width=42, wrap="word", state="disabled",
-            background="#f8fafc", foreground=c["texte"],
+            ap, height=6, width=42, wrap="none", state="disabled",
+            background=c["champ"], foreground=c["texte"],
             relief="flat", borderwidth=0, padx=9, pady=6,
             highlightthickness=1, highlightbackground=c["bordure"],
             font=("DejaVu Sans", 9))
+        self.apercu.tag_configure("choisi", background=c["sel_fond"],
+                                  foreground=c["sel_texte"])
         self.apercu.grid(row=0, column=0, sticky="nsew")
         self._lier_molette(self.apercu)
 
@@ -1475,28 +1626,15 @@ class Application(ttk.Frame):
         ttk.Checkbutton(opts, text="Ouvrir le HTML à la fin",
                         variable=self.v_ouvrir).pack(side="left")
 
-        # Lancement et journal
+        # Lancement
         self.btn = ttk.Button(contenu, text="GÉNÉRER LE DIAGRAMME",
                               style="Primary.TButton", command=self._lancer)
         self.btn.grid(row=3, column=0, columnspan=2, sticky="ew",
-                      pady=(0, 8))
-        journal_card = ttk.LabelFrame(
-            contenu, text="  Journal  ·  Suivi de la génération  ",
-            style="Card.TLabelframe", padding=8)
-        journal_card.grid(row=4, column=0, columnspan=2, sticky="nsew")
-        journal_card.columnconfigure(0, weight=1)
-        journal_card.rowconfigure(0, weight=1)
-        self.journal = tk.Text(
-            journal_card, height=4, state="disabled", wrap="word",
-            background="#f8fafc", foreground="#475569", relief="flat",
-            borderwidth=0, padx=8, pady=5, font=("DejaVu Sans Mono", 9),
-            highlightthickness=1, highlightbackground=c["bordure"])
-        self.journal.grid(row=0, column=0, sticky="nsew")
-        journal_sb = ttk.Scrollbar(journal_card, orient="vertical",
-                                   command=self.journal.yview)
-        journal_sb.grid(row=0, column=1, sticky="ns")
-        self.journal.configure(yscrollcommand=journal_sb.set)
-        self._lier_molette(self.journal)
+                      pady=(0, 6))
+        # Ligne d'état (une seule ligne : dernier message important)
+        self.lbl_statut = ttk.Label(contenu, text="", anchor="w",
+                                    style="Status.TLabel")
+        self.lbl_statut.grid(row=4, column=0, columnspan=2, sticky="ew")
 
     # ---------- utilitaires ----------
     def log(self, message):
@@ -1510,16 +1648,20 @@ class Application(ttk.Frame):
                 if isinstance(msg, tuple):       # commande interne
                     msg[0](*msg[1:])
                 else:
-                    self._ecrire_journal(msg)
+                    self._noter(msg)
         except queue.Empty:
             pass
         self.after(150, self._lire_logs)
 
-    def _ecrire_journal(self, msg):
-        self.journal.configure(state="normal")
-        self.journal.insert("end", msg + "\n")
-        self.journal.see("end")
-        self.journal.configure(state="disabled")
+    def _noter(self, msg):
+        """Garde le message et affiche sa première ligne dans la ligne
+        d'état."""
+        self._messages.append(msg)
+        lignes = msg.strip().splitlines()
+        premiere = lignes[0] if lignes else ""
+        if len(premiere) > 160:
+            premiere = premiere[:157] + "…"
+        self.lbl_statut.configure(text=premiere)
 
     # ---------- chargement GEDCOM ----------
     def _choisir_gedcom(self):
@@ -1560,10 +1702,12 @@ class Application(ttk.Frame):
         self.lbl_info.configure(
             text=f"{len(self.individus)} individus, "
                  f"{len(self.familles)} familles.")
+        self._maj_niveaux_lieu(nombre_niveaux(indice_pays(self.format_lieu)))
         self.log(f"Fichier chargé : {os.path.basename(chemin)}")
         self.v_recherche.set("")
         self._filtrer(selection=self.premier)
         self._maj_apercu_lieux()
+        self._dimensionner_apercu()
 
     def _libelle(self, xref):
         i = self.individus[xref]
@@ -1598,6 +1742,33 @@ class Application(ttk.Frame):
             return None
         return self.liste_affichee[sel[0]]
 
+    def _dimensionner_apercu(self):
+        """Élargit l'aperçu (donc la fenêtre) pour que chaque ligne tienne
+        sur une seule ligne, quel que soit le niveau de lieu choisi."""
+        if not self.individus:
+            return
+        police = tkfont.Font(font=self.apercu.cget("font"))
+        ip = indice_pays(self.format_lieu)
+        nb = nombre_niveaux(ip)
+        largeur = 0
+        vus = set()
+        for indi in self.individus.values():
+            brut = indi["lieu_naissance"] or indi["lieu_bapteme"]
+            if not brut or brut in vus:
+                continue
+            vus.add(brut)
+            parts = [p.strip() for p in brut.split(",")][:nb]
+            pire = (f"{extraire_pays(parts, ip)} - "
+                    f"{max(parts, key=police.measure)}  ←  "
+                    f"{brut}")                          # pire cas
+            largeur = max(largeur, police.measure(pire))
+            if len(vus) >= 12:
+                break
+        marge = 2 * 9 + 14           # padx du Text + liseré + ascenseur
+        car = max(police.measure("0"), 1)
+        self.apercu.configure(width=max(42, (largeur + marge) // car + 1))
+        self.ajuster_taille_fenetre(seulement_agrandir=True)
+
     def _maj_apercu_lieux(self):
         """Montre comment quelques lieux du fichier seront découpés."""
         if not self.individus:
@@ -1606,22 +1777,44 @@ class Application(ttk.Frame):
             niveau = int(self.v_niveau.get())
         except (tk.TclError, ValueError):
             return
-        vus, lignes = set(), []
+        ip = indice_pays(self.format_lieu)
+        nb = nombre_niveaux(ip)
+        depuis_la_fin = self.v_sens.get() == "fin"
+        vus, lignes, marques = set(), [], []
         for indi in self.individus.values():
             brut = indi["lieu_naissance"] or indi["lieu_bapteme"]
             if brut and brut not in vus:
                 vus.add(brut)
                 retenu = extraire_lieu(
-                    brut, niveau, self.v_sens.get() == "fin",
-                    self.v_pays.get(), self.v_pays_premier.get(),
-                    indice_pays(self.format_lieu))
-                lignes.append(f"{retenu}  ←  {brut}")
+                    brut, niveau, depuis_la_fin, self.v_pays.get(),
+                    self.v_pays_premier.get(), ip)
+                prefixe = f"{retenu}  ←  "
+                lignes.append(prefixe + brut)       # détail complet
+                # éléments retenus, à surligner dans le détail
+                tout = brut.split(",")
+                parts = [p.strip() for p in tout][:nb]
+                choisis = [indice_niveau(len(parts), niveau,
+                                         depuis_la_fin)]
+                if self.v_pays.get():
+                    k = position_pays(parts, ip)
+                    lieu = parts[choisis[0]] or LIEU_INCONNU
+                    if (k is not None and parts[k]
+                            and parts[k].casefold() != lieu.casefold()):
+                        choisis.append(k)
+                for k in choisis:
+                    if k < len(tout) and tout[k].strip():
+                        debut = (len(prefixe)
+                                 + sum(len(t) + 1 for t in tout[:k])
+                                 + len(tout[k]) - len(tout[k].lstrip()))
+                        marques.append((len(lignes), debut,
+                                        debut + len(tout[k].strip())))
             if len(lignes) >= 12:
                 break
-        contenu = "\n".join(lignes) or "(aucun lieu)"
         self.apercu.configure(state="normal")
         self.apercu.delete("1.0", "end")
-        self.apercu.insert("end", contenu)
+        self.apercu.insert("end", "\n".join(lignes) or "(aucun lieu)")
+        for n, c0, c1 in marques:
+            self.apercu.tag_add("choisi", f"{n}.{c0}", f"{n}.{c1}")
         self.apercu.configure(state="disabled")
 
     # ---------- choix de fichiers de sortie ----------
@@ -1693,9 +1886,8 @@ class Application(ttk.Frame):
             return
 
         self.btn.configure(state="disabled", text="Génération en cours…")
-        self.log("─" * 40)
-        self.log(f"Individu de départ : "
-                 f"{self.individus[p['racine']]['nom']}")
+        self._messages = []
+        self.lbl_statut.configure(text="Génération en cours…")
 
         def travail():
             try:
@@ -1708,11 +1900,17 @@ class Application(ttk.Frame):
         threading.Thread(target=travail, daemon=True).start()
 
     def _fin(self, chemin, erreur):
-        self.btn.configure(state="normal", text="Générer le diagramme")
+        self.btn.configure(state="normal", text="GÉNÉRER LE DIAGRAMME")
         if erreur is not None:
+            self.lbl_statut.configure(text=f"Échec : {erreur}")
             messagebox.showerror("Erreur", str(erreur))
             return
-        self.log("Terminé.")
+        echecs = [m for m in self._messages if m.startswith("Échec")]
+        if echecs:
+            messagebox.showwarning("Export de l'image", "\n\n".join(echecs))
+        self.lbl_statut.configure(
+            text=f"Terminé : {os.path.basename(chemin)}" if chemin
+            else "Terminé.")
         if self.v_ouvrir.get() and chemin:
             webbrowser.open("file://" + os.path.abspath(chemin))
 
