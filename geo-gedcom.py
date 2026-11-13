@@ -19,6 +19,7 @@ Dépendances (à installer une fois) :
 Tkinter est fourni avec Python (sous Linux : paquet "python3-tk").
 """
 
+import json
 import math
 import os
 import re
@@ -85,6 +86,62 @@ THEMES = {
     },
 }
 THEME_DEFAUT = "clair"
+
+# Valeurs par défaut de la section « Apparence du diagramme »
+DEFAUTS_APPARENCE = {
+    "titre": "Évolution des origines géographiques",
+    "px_unite": 90,
+    "pad": 24,
+    "facteur": 1.25,
+    "larg_noeud": 22,
+    "esp_col": 260,
+}
+
+
+# ============================================================
+# 0 ter. RÉGLAGES MÉMORISÉS D'UNE SESSION À L'AUTRE
+# ============================================================
+
+def chemin_reglages():
+    """Fichier JSON des réglages (dossier de configuration de
+    l'utilisateur, propre à chaque système). La variable d'environnement
+    GEOGEDCOM_REGLAGES permet d'en choisir un autre."""
+    perso = os.environ.get("GEOGEDCOM_REGLAGES")
+    if perso:
+        return perso
+    home = os.path.expanduser("~")
+    if sys.platform == "win32":
+        base = os.environ.get("APPDATA") or os.path.join(home, "AppData",
+                                                         "Roaming")
+    elif sys.platform == "darwin":
+        base = os.path.join(home, "Library", "Application Support")
+    else:
+        base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+            home, ".config")
+    return os.path.join(base, "GeoGEDCOM", "reglages.json")
+
+
+def lire_reglages():
+    """Réglages enregistrés ({} si absents ou illisibles)."""
+    try:
+        with open(chemin_reglages(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def ecrire_reglages(data):
+    """Enregistre les réglages (écriture atomique ; échec silencieux)."""
+    try:
+        chemin = chemin_reglages()
+        os.makedirs(os.path.dirname(chemin) or ".", exist_ok=True)
+        tmp = chemin + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        os.replace(tmp, chemin)
+    except Exception:
+        pass
 
 
 # ============================================================
@@ -986,7 +1043,10 @@ class Application(ttk.Frame):
         master.title(f"Origines géographiques · Analyse GEDCOM  —  "
                      f"version {VERSION}")
         master.option_add("*Font", ("DejaVu Sans", 10))
-        self.v_theme = tk.StringVar(value=THEME_DEFAUT)
+        self._reglages = lire_reglages()
+        theme = self._reglages.get("theme")
+        self.v_theme = tk.StringVar(
+            value=theme if theme in THEMES else THEME_DEFAUT)
         self._configurer_style()
         self.configure(style="App.TFrame")
         self.pack(fill="both", expand=True)
@@ -1028,13 +1088,13 @@ class Application(ttk.Frame):
         self.v_pays_premier = tk.BooleanVar(value=False)
         self.format_lieu = None
 
-        self.v_titre = tk.StringVar(value="Évolution des origines "
-                                          "géographiques")
-        self.v_px_unite = tk.DoubleVar(value=90)
-        self.v_pad = tk.DoubleVar(value=24)
-        self.v_facteur = tk.DoubleVar(value=1.25)
-        self.v_larg_noeud = tk.DoubleVar(value=22)
-        self.v_esp_col = tk.DoubleVar(value=260)
+        d = DEFAUTS_APPARENCE
+        self.v_titre = tk.StringVar(value=d["titre"])
+        self.v_px_unite = tk.DoubleVar(value=d["px_unite"])
+        self.v_pad = tk.DoubleVar(value=d["pad"])
+        self.v_facteur = tk.DoubleVar(value=d["facteur"])
+        self.v_larg_noeud = tk.DoubleVar(value=d["larg_noeud"])
+        self.v_esp_col = tk.DoubleVar(value=d["esp_col"])
 
         self.v_html = tk.StringVar()
         self.v_img_on = tk.BooleanVar(value=False)
@@ -1045,6 +1105,24 @@ class Application(ttk.Frame):
         self._nom_image_auto = ""
         self.v_csv_on = tk.BooleanVar(value=False)
         self.v_ouvrir = tk.BooleanVar(value=True)
+
+        # Réglages mémorisés (ni le fichier GEDCOM ni l'individu choisi).
+        self._vars_reglages = {
+            "theme": self.v_theme,
+            "nb_gen": self.v_nb_gen, "niveau": self.v_niveau,
+            "sens": self.v_sens, "bapteme": self.v_bapteme,
+            "pays": self.v_pays, "pays_premier": self.v_pays_premier,
+            "titre": self.v_titre, "px_unite": self.v_px_unite,
+            "pad": self.v_pad, "facteur": self.v_facteur,
+            "larg_noeud": self.v_larg_noeud, "esp_col": self.v_esp_col,
+            "html": self.v_html, "img_on": self.v_img_on,
+            "format": self.v_format, "nom_image": self.v_nom_image,
+            "dossier_image": self.v_dossier_image,
+            "resolution": self.v_resolution, "csv_on": self.v_csv_on,
+            "ouvrir": self.v_ouvrir,
+        }
+        self._sauvegarde_id = None
+        self._restaurer_reglages()
 
         self._construire_ui()
         for v in (self.v_niveau, self.v_sens, self.v_pays,
@@ -1057,6 +1135,9 @@ class Application(ttk.Frame):
             v.trace_add("write", lambda *a: self._maj_section_image())
         self._maj_section_image()
         self.v_recherche.trace_add("write", lambda *a: self._filtrer())
+        for v in self._vars_reglages.values():
+            v.trace_add("write", lambda *a: self._planifier_sauvegarde())
+        self.master.protocol("WM_DELETE_WINDOW", self._fermer)
         if self.dnd:
             self._activer_glisser_deposer()
         self.after(150, self._lire_logs)
@@ -1068,6 +1149,67 @@ class Application(ttk.Frame):
             self.log("Session Wayland détectée : si le glisser-déposer ne "
                      "réagit pas, collez le chemin du fichier dans le "
                      "champ « Fichier GEDCOM » puis appuyez sur Entrée.")
+
+    # ---------- réglages mémorisés ----------
+
+    def _restaurer_reglages(self):
+        """Replace dans l'interface les réglages de la session
+        précédente (valeurs invalides ignorées)."""
+        r = self._reglages
+        choix = {"sens": ("debut", "fin"), "format": ("jpg", "png"),
+                 "theme": tuple(THEMES)}
+        for cle, var in self._vars_reglages.items():
+            if cle not in r:
+                continue
+            val = r[cle]
+            try:
+                if cle in choix and val not in choix[cle]:
+                    continue
+                if isinstance(var, tk.BooleanVar):
+                    if not isinstance(val, bool):
+                        continue
+                elif isinstance(var, tk.IntVar):
+                    val = int(val)
+                elif isinstance(var, tk.DoubleVar):
+                    val = float(val)
+                else:
+                    val = str(val)
+                var.set(val)
+            except (TypeError, ValueError, tk.TclError):
+                pass
+        self._nom_image_auto = str(r.get("nom_image_auto", ""))
+
+    def _planifier_sauvegarde(self):
+        """Enregistre peu après la dernière modification."""
+        if self._sauvegarde_id is not None:
+            self.after_cancel(self._sauvegarde_id)
+        self._sauvegarde_id = self.after(600, self._sauvegarder_reglages)
+
+    def _sauvegarder_reglages(self):
+        self._sauvegarde_id = None
+        data = {"version": VERSION}
+        for cle, var in self._vars_reglages.items():
+            try:
+                data[cle] = var.get()
+            except (tk.TclError, ValueError):   # champ en cours de saisie
+                if cle in self._reglages:
+                    data[cle] = self._reglages[cle]
+        data["nom_image_auto"] = self._nom_image_auto
+        self._reglages = data
+        ecrire_reglages(data)
+
+    def _fermer(self):
+        if self._sauvegarde_id is not None:
+            self.after_cancel(self._sauvegarde_id)
+        self._sauvegarder_reglages()
+        self.master.destroy()
+
+    def _reinitialiser_apparence(self):
+        """Remet la section « Apparence du diagramme » par défaut (le
+        thème de l'interface n'est pas modifié)."""
+        for cle, valeur in DEFAUTS_APPARENCE.items():
+            getattr(self, "v_" + cle).set(valeur)
+        self.log("Apparence du diagramme : réglages par défaut rétablis.")
 
     def _maj_section_image(self):
         """Active / désactive les champs de l'image et affiche le chemin
@@ -1263,8 +1405,8 @@ class Application(ttk.Frame):
             self.style.theme_use("clam")
         except tk.TclError:
             pass
-        self.couleurs = THEMES[THEME_DEFAUT]
-        self._appliquer_theme(THEME_DEFAUT)
+        self.couleurs = THEMES[self.v_theme.get()]
+        self._appliquer_theme(self.v_theme.get())
 
     def _appliquer_theme(self, cle):
         """Applique un thème : styles ttk + widgets Tk classiques."""
@@ -1323,6 +1465,12 @@ class Application(ttk.Frame):
                   background=[("disabled", c["carte"]),
                               ("active", c["bouton_survol"])],
                   foreground=[("disabled", c["inactif"])])
+        style.configure("Secondaire.TButton", background=c["carte"],
+                        foreground=c["accent"], bordercolor=c["accent"],
+                        padding=(12, 6), font=("DejaVu Sans", 9, "bold"))
+        style.map("Secondaire.TButton",
+                  background=[("active", c["sel_fond"])],
+                  foreground=[("active", c["sel_texte"])])
         style.configure("Primary.TButton", background=c["accent"],
                         foreground=c["texte_accent"],
                         bordercolor=c["accent"], padding=(14, 11),
@@ -1575,6 +1723,12 @@ class Application(ttk.Frame):
                  "l’effectif ; 1,25 = la hauteur augmente de 25 % quand "
                  "l’effectif double."
         ).grid(row=4, column=0, columnspan=4, sticky="w", pady=(9, 0))
+        a.rowconfigure(5, weight=1)
+        ttk.Button(a, text="Réglages par défaut",
+                   style="Secondaire.TButton",
+                   command=self._reinitialiser_apparence
+                   ).grid(row=5, column=0, columnspan=4, sticky="se",
+                          pady=(8, 0))
 
         # 4. Export
         e = carte("4  ·  Export des résultats", 2, 1)
